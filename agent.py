@@ -50,7 +50,7 @@ from alpaca_trader import (
 from analyze import analyze
 from indicator_engine import (
     compute_atr, compute_ema, compute_vwap, compute_rsi,
-    detect_weekly_liquidity,
+    detect_weekly_liquidity, detect_monthly_liquidity,
 )
 from journal import log_trade, log_analysis
 from memories import (
@@ -59,6 +59,9 @@ from memories import (
     SCORE_CRITERIA,
     WEEKLY_LIQUIDITY_BONUS,
     WEEKLY_LEVEL_TYPE_BONUS,
+    MONTHLY_LIQUIDITY_BONUS,
+    MONTHLY_LEVEL_TYPE_BONUS,
+    HTF_BONUS_CAP,
     A_PLUS_THRESHOLD,
     GUARDRAILS,
     DETECTION,
@@ -287,12 +290,13 @@ def score_setup(
     analysis: dict,
     daily_bias: str | None = None,
     weekly_context: dict | None = None,
+    monthly_context: dict | None = None,
 ) -> tuple[int, dict[str, bool], dict]:
     """
     Score an analysis result against the A+ criteria from memories.py,
-    plus weekly liquidity proximity bonus.
+    plus weekly + monthly liquidity proximity bonus (capped at HTF_BONUS_CAP).
 
-    Returns (total_score, {criterion: met_bool}, weekly_bonus_info).
+    Returns (total_score, {criterion: met_bool}, htf_bonus_info).
     """
     ms = analysis["market_state"]
     setup = analysis["detected_setup"]
@@ -355,18 +359,16 @@ def score_setup(
 
     base_score = sum(SCORE_CRITERIA[k] for k, met in checks.items() if met)
 
-    # ── Weekly liquidity proximity bonus ──────────────────────────────
-    weekly_bonus = 0
-    weekly_info = {"bonus": 0, "nearest_level": None, "reason": "No weekly context"}
-
-    if weekly_context and weekly_context.get("levels"):
+    # ── HTF liquidity proximity bonus (weekly + monthly, capped) ──────
+    def _best_htf_bonus(context, prox_table, type_table):
+        if not context or not context.get("levels"):
+            return 0, None
         best_bonus = 0
         best_level = None
-
-        for lvl in weekly_context["levels"]:
+        for lvl in context["levels"]:
             proximity = lvl.get("proximity", "FAR")
-            prox_bonus = WEEKLY_LIQUIDITY_BONUS.get(proximity, 0)
-            type_bonus = WEEKLY_LEVEL_TYPE_BONUS.get(lvl["type"], 0)
+            prox_bonus = prox_table.get(proximity, 0)
+            type_bonus = type_table.get(lvl["type"], 0)
 
             is_target = False
             if side == "buy" and lvl["price"] > price:
@@ -375,7 +377,6 @@ def score_setup(
                 is_target = True
             elif lvl["price"] <= price * 1.001 and lvl["price"] >= price * 0.999:
                 is_target = True
-
             if not is_target:
                 continue
 
@@ -383,22 +384,37 @@ def score_setup(
             if total_lvl_bonus > best_bonus:
                 best_bonus = total_lvl_bonus
                 best_level = lvl
+        return best_bonus, best_level
 
-        weekly_bonus = best_bonus
-        if best_level:
-            weekly_info = {
-                "bonus": weekly_bonus,
-                "nearest_level": best_level,
-                "reason": f"{best_level['label']} @ ${best_level['price']:,.2f} "
-                          f"({best_level['proximity']}, {best_level['distance_pct']}% away) "
-                          f"→ +{weekly_bonus}pts",
-            }
-        else:
-            weekly_info = {"bonus": 0, "nearest_level": None,
-                           "reason": "No aligned weekly levels nearby"}
+    w_bonus, w_level = _best_htf_bonus(weekly_context, WEEKLY_LIQUIDITY_BONUS, WEEKLY_LEVEL_TYPE_BONUS)
+    m_bonus, m_level = _best_htf_bonus(monthly_context, MONTHLY_LIQUIDITY_BONUS, MONTHLY_LEVEL_TYPE_BONUS)
 
-    total = base_score + weekly_bonus
-    return total, checks, weekly_info
+    combined_htf = min(w_bonus + m_bonus, HTF_BONUS_CAP)
+
+    htf_info = {
+        "weekly_bonus": w_bonus,
+        "monthly_bonus": m_bonus,
+        "combined_bonus": combined_htf,
+        "weekly_level": None,
+        "monthly_level": None,
+        "reason_weekly": "No aligned weekly levels nearby",
+        "reason_monthly": "No aligned monthly levels nearby",
+    }
+    if w_level:
+        htf_info["weekly_level"] = w_level
+        htf_info["reason_weekly"] = (
+            f"{w_level['label']} @ ${w_level['price']:,.2f} "
+            f"({w_level['proximity']}, {w_level['distance_pct']}% away) → +{w_bonus}pts"
+        )
+    if m_level:
+        htf_info["monthly_level"] = m_level
+        htf_info["reason_monthly"] = (
+            f"{m_level['label']} @ ${m_level['price']:,.2f} "
+            f"({m_level['proximity']}, {m_level['distance_pct']}% away) → +{m_bonus}pts"
+        )
+
+    total = base_score + combined_htf
+    return total, checks, htf_info
 
 
 # ─── Multi-timeframe bias ────────────────────────────────────────────────────
@@ -488,6 +504,42 @@ def get_weekly_context(symbol: str, current_price: float) -> dict:
 
     print(f"     PWH: ${ctx['pwh']:,.2f}   PWL: ${ctx['pwl']:,.2f}")
     print(f"     This Week: H=${ctx['current_week_high']:,.2f}  L=${ctx['current_week_low']:,.2f}")
+    print(f"     Key Levels ({len(ctx['levels'])}):")
+
+    for lvl in ctx["levels"]:
+        arrow = "▲" if lvl["price"] > current_price else "▼"
+        prox = lvl.get("proximity", "")
+        dist = lvl.get("distance_pct", 0)
+        print(f"       {arrow} ${lvl['price']:>10,.2f}  {prox:<12} ({dist:.2f}%)  {lvl['label']}")
+
+    if ctx["nearest_above"]:
+        na = ctx["nearest_above"]
+        print(f"     ➤ Nearest ABOVE: ${na['price']:,.2f} — {na['label']}")
+    if ctx["nearest_below"]:
+        nb = ctx["nearest_below"]
+        print(f"     ➤ Nearest BELOW: ${nb['price']:,.2f} — {nb['label']}")
+
+    return ctx
+
+
+def get_monthly_context(symbol: str, current_price: float) -> dict:
+    """
+    Fetch monthly bars and build the monthly liquidity map: PMH/PML,
+    quarterly levels, swing levels, equal H/L, monthly FVGs.
+    """
+    print(f"\n  📅 MONTHLY LIQUIDITY MAP for {symbol}")
+    monthly_bars = get_historical_bars(symbol, "1Month",
+                                        start=(datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d"),
+                                        end=None)
+
+    if len(monthly_bars) < 3:
+        print(f"     ⚠ Only {len(monthly_bars)} monthly bars — insufficient for liquidity map")
+        return {"levels": [], "nearest_above": None, "nearest_below": None}
+
+    ctx = detect_monthly_liquidity(monthly_bars, current_price)
+
+    print(f"     PMH: ${ctx['pmh']:,.2f}   PML: ${ctx['pml']:,.2f}")
+    print(f"     This Month: H=${ctx['current_month_high']:,.2f}  L=${ctx['current_month_low']:,.2f}")
     print(f"     Key Levels ({len(ctx['levels'])}):")
 
     for lvl in ctx["levels"]:
@@ -654,8 +706,9 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         print(f"  ANALYZING {sym}  (multi-timeframe)")
         print(f"{'─'*72}")
 
-        # ── Step 1: Weekly liquidity map ─────────────────────────────
+        # ── Step 1: HTF liquidity maps (weekly + monthly) ─────────────
         weekly_ctx = None
+        monthly_ctx = None
         try:
             live_snap = get_live_price(sym)
             stats.tick_quote()
@@ -663,13 +716,20 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         except Exception:
             snap_price = None
 
-        try:
-            if snap_price:
+        if snap_price:
+            try:
                 weekly_ctx = get_weekly_context(sym, snap_price)
                 stats.tick_api()
                 stats.tick_indicators(3)
-        except Exception as e:
-            print(f"  ⚠ Weekly analysis failed for {sym}: {e}")
+            except Exception as e:
+                print(f"  ⚠ Weekly analysis failed for {sym}: {e}")
+
+            try:
+                monthly_ctx = get_monthly_context(sym, snap_price)
+                stats.tick_api()
+                stats.tick_indicators(3)
+            except Exception as e:
+                print(f"  ⚠ Monthly analysis failed for {sym}: {e}")
 
         # ── Step 2: Daily bias ────────────────────────────────────────
         try:
@@ -709,22 +769,27 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
         stats.setups_detected += 1
 
-        # ── Step 4: A+ Scoring + Weekly Liquidity Bonus ───────────────
-        score, checks, weekly_bonus_info = score_setup(intraday, daily_bias, weekly_ctx)
+        # ── Step 4: A+ Scoring + HTF Liquidity Bonus ─────────────────
+        score, checks, htf_info = score_setup(intraday, daily_bias, weekly_ctx, monthly_ctx)
         base_score = sum(SCORE_CRITERIA[k] for k, met in checks.items() if met)
-        wb = weekly_bonus_info.get("bonus", 0)
+        wb = htf_info.get("weekly_bonus", 0)
+        mb = htf_info.get("monthly_bonus", 0)
+        htf_total = htf_info.get("combined_bonus", 0)
 
-        print(f"\n  A+ SCORE: {score}/100  (base: {base_score} + weekly: +{wb})")
-        print(f"  Threshold: {A_PLUS_THRESHOLD}")
+        print(f"\n  A+ SCORE: {score}  (base: {base_score} + weekly: +{wb} + monthly: +{mb} = +{htf_total} HTF)")
+        print(f"  Threshold: {A_PLUS_THRESHOLD}  |  HTF cap: {HTF_BONUS_CAP}")
         for criterion, met in checks.items():
             pts = SCORE_CRITERIA[criterion]
             mark = "✓" if met else "✗"
             print(f"    {mark} {criterion}: {pts}pts")
         if wb > 0:
-            print(f"    ✓ weekly_liquidity: +{wb}pts — {weekly_bonus_info['reason']}")
+            print(f"    ✓ weekly_liquidity: +{wb}pts — {htf_info['reason_weekly']}")
         else:
-            reason = weekly_bonus_info.get("reason", "No weekly context")
-            print(f"    ✗ weekly_liquidity: +0pts — {reason}")
+            print(f"    ✗ weekly_liquidity: +0pts — {htf_info['reason_weekly']}")
+        if mb > 0:
+            print(f"    ✓ monthly_liquidity: +{mb}pts — {htf_info['reason_monthly']}")
+        else:
+            print(f"    ✗ monthly_liquidity: +0pts — {htf_info['reason_monthly']}")
 
         if score < A_PLUS_THRESHOLD:
             print(f"  ⏭ Score {score} < {A_PLUS_THRESHOLD} — not A+ quality, skipping")
@@ -765,10 +830,13 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         print(f"     Stop:        ${trade['stop_loss']:,.2f}")
         print(f"     Target:      ${trade['take_profit']:,.2f}")
         print(f"     R:R:         {trade['risk_reward']}")
-        print(f"     A+ Score:    {score}/100 (base {base_score} + weekly +{wb})")
-        if weekly_bonus_info.get("nearest_level"):
-            nl = weekly_bonus_info["nearest_level"]
-            print(f"     Weekly Lvl:  {nl['label']} @ ${nl['price']:,.2f}")
+        print(f"     A+ Score:    {score} (base {base_score} + HTF +{htf_total})")
+        if htf_info.get("weekly_level"):
+            wl = htf_info["weekly_level"]
+            print(f"     Weekly Lvl:  {wl['label']} @ ${wl['price']:,.2f}")
+        if htf_info.get("monthly_level"):
+            ml = htf_info["monthly_level"]
+            print(f"     Monthly Lvl: {ml['label']} @ ${ml['price']:,.2f}")
 
         if dry_run:
             print(f"  📋 DRY RUN — trade logged but NOT executed")
@@ -778,8 +846,10 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                 "exec_price": exec_price, "stop_loss": trade["stop_loss"],
                 "take_profit": trade["take_profit"],
                 "a_plus_score": score, "base_score": base_score,
-                "weekly_bonus": wb,
-                "weekly_level": weekly_bonus_info.get("reason"),
+                "weekly_bonus": wb, "monthly_bonus": mb,
+                "htf_bonus_total": htf_total,
+                "weekly_level": htf_info.get("reason_weekly"),
+                "monthly_level": htf_info.get("reason_monthly"),
             }, action=f"dry_{side}")
             continue
 

@@ -380,6 +380,134 @@ def detect_weekly_liquidity(weekly_bars: list[dict], current_price: float) -> di
     }
 
 
+def detect_monthly_liquidity(monthly_bars: list[dict], current_price: float) -> dict:
+    """
+    Build the monthly liquidity map from monthly bars.
+
+    Identifies:
+      - Prior month high/low (PMH/PML)
+      - 2-months-ago high/low
+      - Current month developing high/low
+      - Swing highs/lows on the monthly
+      - Equal highs/lows (stacked liquidity — very significant on monthly)
+      - Monthly FVGs
+      - Nearest liquidity levels above and below current price
+
+    Monthly levels carry more weight than weekly because they represent
+    larger pools of accumulated orders and stops.
+    """
+    if len(monthly_bars) < 3:
+        return {"levels": [], "nearest_above": None, "nearest_below": None,
+                "pmh": None, "pml": None}
+
+    levels = []
+
+    # Prior month high/low
+    pm = monthly_bars[-2]
+    pmh = round(float(pm["high"]), 2)
+    pml = round(float(pm["low"]), 2)
+    levels.append({"price": pmh, "type": "pmh", "label": "Prior Month High"})
+    levels.append({"price": pml, "type": "pml", "label": "Prior Month Low"})
+
+    # 2-months-ago high/low
+    if len(monthly_bars) >= 3:
+        pm2 = monthly_bars[-3]
+        levels.append({"price": round(float(pm2["high"]), 2), "type": "pm2h",
+                        "label": "2-Month-Ago High"})
+        levels.append({"price": round(float(pm2["low"]), 2), "type": "pm2l",
+                        "label": "2-Month-Ago Low"})
+
+    # 3-months-ago (quarterly reference)
+    if len(monthly_bars) >= 4:
+        pm3 = monthly_bars[-4]
+        levels.append({"price": round(float(pm3["high"]), 2), "type": "quarterly_high",
+                        "label": "Quarterly High (3mo ago)"})
+        levels.append({"price": round(float(pm3["low"]), 2), "type": "quarterly_low",
+                        "label": "Quarterly Low (3mo ago)"})
+
+    # Current month developing H/L
+    cm = monthly_bars[-1]
+    cmh = round(float(cm["high"]), 2)
+    cml = round(float(cm["low"]), 2)
+
+    # Swing levels on monthly (use lookback=2 since we have fewer bars)
+    lb = min(2, len(monthly_bars) // 3)
+    if lb >= 1:
+        swings = detect_swing_levels(monthly_bars, lookback=lb)
+        for _, price, time in swings["swing_highs"][-4:]:
+            levels.append({"price": price, "type": "monthly_swing_high",
+                            "label": f"Monthly Swing High ({time})"})
+        for _, price, time in swings["swing_lows"][-4:]:
+            levels.append({"price": price, "type": "monthly_swing_low",
+                            "label": f"Monthly Swing Low ({time})"})
+
+    # Equal highs/lows on monthly — use wider tolerance (0.5%)
+    equals = detect_equal_levels(monthly_bars, tolerance_pct=0.005)
+    for price, count, times in equals["equal_highs"][:3]:
+        levels.append({"price": price, "type": "monthly_equal_highs",
+                        "label": f"Monthly Equal Highs x{count} (major liquidity pool)"})
+    for price, count, times in equals["equal_lows"][:3]:
+        levels.append({"price": price, "type": "monthly_equal_lows",
+                        "label": f"Monthly Equal Lows x{count} (major liquidity pool)"})
+
+    # Monthly FVGs
+    for i in range(len(monthly_bars) - 2):
+        b0_high = float(monthly_bars[i]["high"])
+        b0_low = float(monthly_bars[i]["low"])
+        b2_high = float(monthly_bars[i + 2]["high"])
+        b2_low = float(monthly_bars[i + 2]["low"])
+
+        if b2_low > b0_high:
+            gap_mid = round((b2_low + b0_high) / 2, 2)
+            gap_pct = (b2_low - b0_high) / b0_high
+            if gap_pct > 0.005:
+                levels.append({"price": gap_mid, "type": "monthly_fvg_bullish",
+                                "label": f"Monthly Bullish FVG ({monthly_bars[i+1]['time']})"})
+        elif b0_low > b2_high:
+            gap_mid = round((b0_low + b2_high) / 2, 2)
+            gap_pct = (b0_low - b2_high) / b2_high
+            if gap_pct > 0.005:
+                levels.append({"price": gap_mid, "type": "monthly_fvg_bearish",
+                                "label": f"Monthly Bearish FVG ({monthly_bars[i+1]['time']})"})
+
+    # Deduplicate levels within 0.2% of each other
+    unique = []
+    for lvl in sorted(levels, key=lambda x: x["price"]):
+        if not unique or abs(lvl["price"] - unique[-1]["price"]) / max(lvl["price"], 0.01) > 0.002:
+            unique.append(lvl)
+        else:
+            if lvl["type"] in ("pmh", "pml", "monthly_equal_highs", "monthly_equal_lows"):
+                unique[-1] = lvl
+
+    # Find nearest above and below current price
+    above = [l for l in unique if l["price"] > current_price]
+    below = [l for l in unique if l["price"] < current_price]
+    nearest_above = min(above, key=lambda x: x["price"]) if above else None
+    nearest_below = max(below, key=lambda x: x["price"]) if below else None
+
+    # Proximity scoring — same thresholds as weekly
+    for lvl in unique:
+        dist_pct = abs(lvl["price"] - current_price) / current_price * 100
+        lvl["distance_pct"] = round(dist_pct, 2)
+        lvl["proximity"] = (
+            "AT_LEVEL" if dist_pct < 0.15 else
+            "VERY_CLOSE" if dist_pct < 0.5 else
+            "CLOSE" if dist_pct < 1.0 else
+            "NEARBY" if dist_pct < 2.0 else
+            "FAR"
+        )
+
+    return {
+        "levels": unique,
+        "nearest_above": nearest_above,
+        "nearest_below": nearest_below,
+        "pmh": pmh,
+        "pml": pml,
+        "current_month_high": cmh,
+        "current_month_low": cml,
+    }
+
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 def summarize_indicators(bars: list[dict]) -> dict:

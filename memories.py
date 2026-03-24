@@ -77,6 +77,34 @@ WEEKLY_LEVEL_TYPE_BONUS = {
     "pw2l":             1,
 }
 
+# Monthly liquidity proximity bonus — stacks with weekly.
+# Monthly levels are higher-timeframe = bigger liquidity pools.
+MONTHLY_LIQUIDITY_BONUS = {
+    "AT_LEVEL":    30,  # Price within 0.15% of monthly level
+    "VERY_CLOSE":  25,  # Within 0.5%
+    "CLOSE":       15,  # Within 1.0%
+    "NEARBY":       5,  # Within 2.0%
+    "FAR":          0,
+}
+
+MONTHLY_LEVEL_TYPE_BONUS = {
+    "pmh":                  8,   # Prior month high — major liquidity
+    "pml":                  8,   # Prior month low — major liquidity
+    "monthly_equal_highs":  8,   # Monthly equal highs — massive stop pool
+    "monthly_equal_lows":   8,   # Monthly equal lows — massive stop pool
+    "quarterly_high":       6,   # 3-month-ago high
+    "quarterly_low":        6,   # 3-month-ago low
+    "monthly_fvg_bullish":  4,
+    "monthly_fvg_bearish":  4,
+    "monthly_swing_high":   3,
+    "monthly_swing_low":    3,
+    "pm2h":                 2,
+    "pm2l":                 2,
+}
+
+# Combined weekly + monthly bonus cap
+HTF_BONUS_CAP = 45
+
 A_PLUS_THRESHOLD = 80
 
 # ─── Guardrails ──────────────────────────────────────────────────────────────
