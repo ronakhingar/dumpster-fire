@@ -52,7 +52,7 @@ from indicator_engine import (
     compute_atr, compute_ema, compute_vwap, compute_rsi,
     detect_weekly_liquidity, detect_monthly_liquidity,
 )
-from journal import log_trade, log_analysis
+from journal import log_trade, log_analysis, log_decision
 from memories import (
     KILLZONES,
     MACRO_WINDOWS,
@@ -657,6 +657,44 @@ def manage_positions(dry_run: bool = False):
                   f"stop={stop_price:.2f} target={target_price:.2f} P&L={pnl_pct:+.2%}")
 
 
+# ─── Decision logging ─────────────────────────────────────────────────────────
+
+def _log_sym_decision(
+    symbol: str,
+    outcome: str,
+    reason: str,
+    detected_setup: str = "none",
+    recommendation: str = "no_trade",
+    daily_bias: str = "unknown",
+    scores: dict | None = None,
+    criteria: dict | None = None,
+    market_state: dict | None = None,
+    trade_levels: dict | None = None,
+    htf_info: dict | None = None,
+):
+    """Build and log a full decision record."""
+    is_kz, kz_label = in_killzone()
+    decision = {
+        "symbol": symbol,
+        "outcome": outcome,
+        "reason": reason,
+        "detected_setup": detected_setup,
+        "recommendation": recommendation,
+        "daily_bias": daily_bias,
+        "killzone": kz_label,
+        "in_macro_window": in_macro_window(),
+        "scores": scores or {"base": 0, "weekly_bonus": 0, "monthly_bonus": 0, "htf_total": 0, "final": 0},
+        "criteria": criteria or {},
+        "market_state": market_state or {},
+        "trade_levels": trade_levels or {},
+        "htf_context": {
+            "weekly": htf_info.get("reason_weekly") if htf_info else None,
+            "monthly": htf_info.get("reason_monthly") if htf_info else None,
+        } if htf_info else {},
+    }
+    log_decision(decision)
+
+
 # ─── Core scan-and-act cycle ─────────────────────────────────────────────────
 
 def scan_and_act(dry_run: bool = False) -> list[dict]:
@@ -742,6 +780,10 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
         if daily_bias == "neutral":
             print(f"  ⏭ Daily bias is NEUTRAL for {sym} — no clear direction, sitting out")
+            _log_sym_decision(sym, "neutral_bias",
+                "Daily bias is neutral — no clear direction, sitting out",
+                daily_bias="neutral",
+                market_state=bias_data.get("daily_analysis", {}).get("market_state"))
             results.append(bias_data.get("daily_analysis", {}))
             continue
 
@@ -754,6 +796,10 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
             continue
 
         if intraday is None:
+            _log_sym_decision(sym, "counter_trend",
+                f"Intraday setup opposes daily bias ({daily_bias})",
+                daily_bias=daily_bias,
+                market_state=bias_data.get("daily_analysis", {}).get("market_state"))
             results.append(bias_data.get("daily_analysis", {}))
             continue
 
@@ -761,10 +807,23 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
         if not can_trade:
             print(f"  ⏸ Skipping trade evaluation — pre-flight failed")
+            failed_checks = [n for n, (ok, _) in preflight if not ok]
+            _log_sym_decision(sym, "preflight_blocked",
+                f"Pre-flight failed: {', '.join(failed_checks)}",
+                detected_setup=intraday.get("detected_setup", "none"),
+                recommendation=intraday.get("recommendation", "no_trade"),
+                daily_bias=daily_bias,
+                market_state=intraday.get("market_state"))
             continue
 
         if intraday["recommendation"] not in ("buy", "sell"):
             print(f"  ⏭ No actionable intraday setup — rec: {intraday['recommendation']}")
+            _log_sym_decision(sym, "no_setup",
+                f"No actionable setup detected — recommendation: {intraday['recommendation']}",
+                detected_setup=intraday.get("detected_setup", "none"),
+                recommendation=intraday["recommendation"],
+                daily_bias=daily_bias,
+                market_state=intraday.get("market_state"))
             continue
 
         stats.setups_detected += 1
@@ -793,6 +852,17 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
         if score < A_PLUS_THRESHOLD:
             print(f"  ⏭ Score {score} < {A_PLUS_THRESHOLD} — not A+ quality, skipping")
+            _log_sym_decision(sym, "score_too_low",
+                f"A+ score {score} < threshold {A_PLUS_THRESHOLD}",
+                detected_setup=intraday.get("detected_setup", "none"),
+                recommendation=intraday["recommendation"],
+                daily_bias=daily_bias,
+                scores={"base": base_score, "weekly_bonus": wb,
+                        "monthly_bonus": mb, "htf_total": htf_total, "final": score},
+                criteria=checks,
+                market_state=intraday.get("market_state"),
+                trade_levels=intraday.get("trade"),
+                htf_info=htf_info)
             continue
 
         # ── Step 5: Live quote confirmation ───────────────────────────
@@ -801,6 +871,15 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
         if trade["risk_reward"] and trade["risk_reward"] < GUARDRAILS["min_risk_reward"]:
             print(f"  ⏭ R:R {trade['risk_reward']} < {GUARDRAILS['min_risk_reward']} — skipping")
+            _log_sym_decision(sym, "rr_too_low",
+                f"R:R {trade['risk_reward']} < minimum {GUARDRAILS['min_risk_reward']}",
+                detected_setup=intraday.get("detected_setup", "none"),
+                recommendation=side, daily_bias=daily_bias,
+                scores={"base": base_score, "weekly_bonus": wb,
+                        "monthly_bonus": mb, "htf_total": htf_total, "final": score},
+                criteria=checks,
+                market_state=intraday.get("market_state"),
+                trade_levels=trade, htf_info=htf_info)
             continue
 
         live = get_live_price(sym)
@@ -812,6 +891,15 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
             if slippage_pct > 0.005:
                 print(f"  ⏭ Live price ${live_mid:,.2f} has moved >{slippage_pct:.1%} from "
                       f"entry ${entry_price:,.2f} — stale signal, skipping")
+                _log_sym_decision(sym, "slippage_skip",
+                    f"Live price ${live_mid:,.2f} moved {slippage_pct:.2%} from entry ${entry_price:,.2f}",
+                    detected_setup=intraday.get("detected_setup", "none"),
+                    recommendation=side, daily_bias=daily_bias,
+                    scores={"base": base_score, "weekly_bonus": wb,
+                            "monthly_bonus": mb, "htf_total": htf_total, "final": score},
+                    criteria=checks,
+                    market_state=intraday.get("market_state"),
+                    trade_levels=trade, htf_info=htf_info)
                 continue
             exec_price = round(live_mid, 2)
             print(f"  💹 Live quote: bid=${live['bid']:,.2f}  ask=${live['ask']:,.2f}  "
@@ -838,6 +926,9 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
             ml = htf_info["monthly_level"]
             print(f"     Monthly Lvl: {ml['label']} @ ${ml['price']:,.2f}")
 
+        decision_scores = {"base": base_score, "weekly_bonus": wb,
+                           "monthly_bonus": mb, "htf_total": htf_total, "final": score}
+
         if dry_run:
             print(f"  📋 DRY RUN — trade logged but NOT executed")
             log_trade({
@@ -851,6 +942,16 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                 "weekly_level": htf_info.get("reason_weekly"),
                 "monthly_level": htf_info.get("reason_monthly"),
             }, action=f"dry_{side}")
+            _log_sym_decision(sym, "trade_signal",
+                f"DRY RUN — {side.upper()} {qty} @ ${exec_price:,.2f} (would have executed)",
+                detected_setup=intraday.get("detected_setup", "none"),
+                recommendation=side, daily_bias=daily_bias,
+                scores=decision_scores, criteria=checks,
+                market_state=intraday.get("market_state"),
+                trade_levels={"entry": exec_price, "stop_loss": trade["stop_loss"],
+                              "take_profit": trade["take_profit"], "risk_reward": trade["risk_reward"],
+                              "qty": qty},
+                htf_info=htf_info)
             continue
 
         # ── Step 7: Execute ───────────────────────────────────────────
@@ -866,9 +967,26 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
             stats.trades_executed += 1
             stats.tick_api()
             print(f"  ✓ Order placed: {order['id']}")
+            _log_sym_decision(sym, "order_placed",
+                f"{side.upper()} {qty} @ ${exec_price:,.2f} — order {order['id']}",
+                detected_setup=intraday.get("detected_setup", "none"),
+                recommendation=side, daily_bias=daily_bias,
+                scores=decision_scores, criteria=checks,
+                market_state=intraday.get("market_state"),
+                trade_levels={"entry": exec_price, "stop_loss": trade["stop_loss"],
+                              "take_profit": trade["take_profit"], "risk_reward": trade["risk_reward"],
+                              "qty": qty, "order_id": order["id"]},
+                htf_info=htf_info)
 
         except Exception as e:
             print(f"  ✗ Order failed: {e}")
+            _log_sym_decision(sym, "order_failed",
+                f"Order failed: {e}",
+                detected_setup=intraday.get("detected_setup", "none"),
+                recommendation=side, daily_bias=daily_bias,
+                scores=decision_scores, criteria=checks,
+                market_state=intraday.get("market_state"),
+                trade_levels=trade, htf_info=htf_info)
 
     # ── Summary + stats ───────────────────────────────────────────────────
     state = _get_daily_state()
