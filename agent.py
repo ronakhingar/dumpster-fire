@@ -2,21 +2,23 @@
 """
 Autonomous trading agent for SPY/QQQ on Alpaca paper.
 
-Multi-timeframe approach:
+Three-timeframe approach:
+  - Weekly (1Week) bars for liquidity map (PWH/PWL, equal H/L, swing levels, FVGs)
   - Daily (1Day) bars for directional bias
   - Intraday (15Min) bars for entry signals
   - Real-time quotes for execution pricing
 
 Orchestrates the full loop:
   1. Pre-flight checks (market open, killzone, daily limits)
-  2. Daily bias analysis — determine if we're bullish, bearish, or flat
-  3. Intraday scan on 15Min bars for entry setups
-  4. Real-time quote to confirm price hasn't gapped away
-  5. Score each setup against A+ criteria from memories.py
-  6. Enforce guardrails (position sizing, R:R, loss limits, cooldown)
-  7. Execute qualifying trades via alpaca_trader.py
-  8. Manage open positions (stop/target exits using live price)
-  9. Journal everything
+  2. Weekly liquidity map — identify where the big pools sit
+  3. Daily bias analysis — determine if we're bullish, bearish, or flat
+  4. Intraday scan on 15Min bars for entry setups
+  5. Real-time quote to confirm price hasn't gapped away
+  6. Score setup against A+ criteria + weekly liquidity proximity bonus
+  7. Enforce guardrails (position sizing, R:R, loss limits, cooldown)
+  8. Execute qualifying trades via alpaca_trader.py
+  9. Manage open positions (stop/target exits using live price)
+  10. Journal everything
 
 Run modes:
   python3 agent.py              # single scan + act cycle
@@ -46,12 +48,17 @@ from alpaca_trader import (
     ALLOWED_SYMBOLS,
 )
 from analyze import analyze
-from indicator_engine import compute_atr, compute_ema, compute_vwap, compute_rsi
+from indicator_engine import (
+    compute_atr, compute_ema, compute_vwap, compute_rsi,
+    detect_weekly_liquidity,
+)
 from journal import log_trade, log_analysis
 from memories import (
     KILLZONES,
     MACRO_WINDOWS,
     SCORE_CRITERIA,
+    WEEKLY_LIQUIDITY_BONUS,
+    WEEKLY_LEVEL_TYPE_BONUS,
     A_PLUS_THRESHOLD,
     GUARDRAILS,
     DETECTION,
@@ -276,10 +283,16 @@ def _check_killzone() -> tuple[bool, str]:
 
 # ─── A+ Scoring ──────────────────────────────────────────────────────────────
 
-def score_setup(analysis: dict, daily_bias: str | None = None) -> tuple[int, dict[str, bool]]:
+def score_setup(
+    analysis: dict,
+    daily_bias: str | None = None,
+    weekly_context: dict | None = None,
+) -> tuple[int, dict[str, bool], dict]:
     """
-    Score an analysis result against the A+ criteria from memories.py.
-    Returns (total_score, {criterion: met_bool}).
+    Score an analysis result against the A+ criteria from memories.py,
+    plus weekly liquidity proximity bonus.
+
+    Returns (total_score, {criterion: met_bool}, weekly_bonus_info).
     """
     ms = analysis["market_state"]
     setup = analysis["detected_setup"]
@@ -340,8 +353,52 @@ def score_setup(analysis: dict, daily_bias: str | None = None) -> tuple[int, dic
     else:
         checks["rsi_not_extreme"] = False
 
-    total = sum(SCORE_CRITERIA[k] for k, met in checks.items() if met)
-    return total, checks
+    base_score = sum(SCORE_CRITERIA[k] for k, met in checks.items() if met)
+
+    # ── Weekly liquidity proximity bonus ──────────────────────────────
+    weekly_bonus = 0
+    weekly_info = {"bonus": 0, "nearest_level": None, "reason": "No weekly context"}
+
+    if weekly_context and weekly_context.get("levels"):
+        best_bonus = 0
+        best_level = None
+
+        for lvl in weekly_context["levels"]:
+            proximity = lvl.get("proximity", "FAR")
+            prox_bonus = WEEKLY_LIQUIDITY_BONUS.get(proximity, 0)
+            type_bonus = WEEKLY_LEVEL_TYPE_BONUS.get(lvl["type"], 0)
+
+            is_target = False
+            if side == "buy" and lvl["price"] > price:
+                is_target = True
+            elif side == "sell" and lvl["price"] < price:
+                is_target = True
+            elif lvl["price"] <= price * 1.001 and lvl["price"] >= price * 0.999:
+                is_target = True
+
+            if not is_target:
+                continue
+
+            total_lvl_bonus = prox_bonus + type_bonus
+            if total_lvl_bonus > best_bonus:
+                best_bonus = total_lvl_bonus
+                best_level = lvl
+
+        weekly_bonus = best_bonus
+        if best_level:
+            weekly_info = {
+                "bonus": weekly_bonus,
+                "nearest_level": best_level,
+                "reason": f"{best_level['label']} @ ${best_level['price']:,.2f} "
+                          f"({best_level['proximity']}, {best_level['distance_pct']}% away) "
+                          f"→ +{weekly_bonus}pts",
+            }
+        else:
+            weekly_info = {"bonus": 0, "nearest_level": None,
+                           "reason": "No aligned weekly levels nearby"}
+
+    total = base_score + weekly_bonus
+    return total, checks, weekly_info
 
 
 # ─── Multi-timeframe bias ────────────────────────────────────────────────────
@@ -413,6 +470,40 @@ def get_intraday_analysis(symbol: str, daily_bias: str) -> dict | None:
         return None
 
     return intraday
+
+
+def get_weekly_context(symbol: str, current_price: float) -> dict:
+    """
+    Fetch weekly bars and build the liquidity map: PWH/PWL, equal H/L,
+    swing levels, weekly FVGs, and proximity to current price.
+    """
+    print(f"\n  📅 WEEKLY LIQUIDITY MAP for {symbol}")
+    weekly_bars = get_historical_bars(symbol, "1Week", start=None, end=None)
+
+    if len(weekly_bars) < 4:
+        print(f"     ⚠ Only {len(weekly_bars)} weekly bars — insufficient for liquidity map")
+        return {"levels": [], "nearest_above": None, "nearest_below": None}
+
+    ctx = detect_weekly_liquidity(weekly_bars, current_price)
+
+    print(f"     PWH: ${ctx['pwh']:,.2f}   PWL: ${ctx['pwl']:,.2f}")
+    print(f"     This Week: H=${ctx['current_week_high']:,.2f}  L=${ctx['current_week_low']:,.2f}")
+    print(f"     Key Levels ({len(ctx['levels'])}):")
+
+    for lvl in ctx["levels"]:
+        arrow = "▲" if lvl["price"] > current_price else "▼"
+        prox = lvl.get("proximity", "")
+        dist = lvl.get("distance_pct", 0)
+        print(f"       {arrow} ${lvl['price']:>10,.2f}  {prox:<12} ({dist:.2f}%)  {lvl['label']}")
+
+    if ctx["nearest_above"]:
+        na = ctx["nearest_above"]
+        print(f"     ➤ Nearest ABOVE: ${na['price']:,.2f} — {na['label']}")
+    if ctx["nearest_below"]:
+        nb = ctx["nearest_below"]
+        print(f"     ➤ Nearest BELOW: ${nb['price']:,.2f} — {nb['label']}")
+
+    return ctx
 
 
 def get_live_price(symbol: str) -> dict | None:
@@ -563,7 +654,24 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         print(f"  ANALYZING {sym}  (multi-timeframe)")
         print(f"{'─'*72}")
 
-        # ── Step 1: Daily bias ────────────────────────────────────────
+        # ── Step 1: Weekly liquidity map ─────────────────────────────
+        weekly_ctx = None
+        try:
+            live_snap = get_live_price(sym)
+            stats.tick_quote()
+            snap_price = ((live_snap["bid"] + live_snap["ask"]) / 2) if live_snap else None
+        except Exception:
+            snap_price = None
+
+        try:
+            if snap_price:
+                weekly_ctx = get_weekly_context(sym, snap_price)
+                stats.tick_api()
+                stats.tick_indicators(3)
+        except Exception as e:
+            print(f"  ⚠ Weekly analysis failed for {sym}: {e}")
+
+        # ── Step 2: Daily bias ────────────────────────────────────────
         try:
             bias_data = get_daily_bias(sym)
             daily_bias = bias_data["bias"]
@@ -577,7 +685,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
             results.append(bias_data.get("daily_analysis", {}))
             continue
 
-        # ── Step 2: Intraday entry scan ───────────────────────────────
+        # ── Step 3: Intraday entry scan ───────────────────────────────
         try:
             intraday = get_intraday_analysis(sym, daily_bias)
             stats.tick_analysis()
@@ -601,19 +709,28 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
         stats.setups_detected += 1
 
-        # ── Step 3: A+ Scoring ────────────────────────────────────────
-        score, checks = score_setup(intraday, daily_bias)
-        print(f"\n  A+ SCORE: {score}/100  (threshold: {A_PLUS_THRESHOLD})")
+        # ── Step 4: A+ Scoring + Weekly Liquidity Bonus ───────────────
+        score, checks, weekly_bonus_info = score_setup(intraday, daily_bias, weekly_ctx)
+        base_score = sum(SCORE_CRITERIA[k] for k, met in checks.items() if met)
+        wb = weekly_bonus_info.get("bonus", 0)
+
+        print(f"\n  A+ SCORE: {score}/100  (base: {base_score} + weekly: +{wb})")
+        print(f"  Threshold: {A_PLUS_THRESHOLD}")
         for criterion, met in checks.items():
             pts = SCORE_CRITERIA[criterion]
             mark = "✓" if met else "✗"
             print(f"    {mark} {criterion}: {pts}pts")
+        if wb > 0:
+            print(f"    ✓ weekly_liquidity: +{wb}pts — {weekly_bonus_info['reason']}")
+        else:
+            reason = weekly_bonus_info.get("reason", "No weekly context")
+            print(f"    ✗ weekly_liquidity: +0pts — {reason}")
 
         if score < A_PLUS_THRESHOLD:
             print(f"  ⏭ Score {score} < {A_PLUS_THRESHOLD} — not A+ quality, skipping")
             continue
 
-        # ── Step 4: Live quote confirmation ───────────────────────────
+        # ── Step 5: Live quote confirmation ───────────────────────────
         side = intraday["recommendation"]
         trade = intraday["trade"]
 
@@ -637,7 +754,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         else:
             exec_price = trade["entry"]
 
-        # ── Step 5: Size the position ─────────────────────────────────
+        # ── Step 6: Size the position ─────────────────────────────────
         atr = intraday["market_state"].get("atr_14")
         qty = compute_position_size(equity, exec_price, atr)
 
@@ -648,7 +765,10 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         print(f"     Stop:        ${trade['stop_loss']:,.2f}")
         print(f"     Target:      ${trade['take_profit']:,.2f}")
         print(f"     R:R:         {trade['risk_reward']}")
-        print(f"     A+ Score:    {score}/100")
+        print(f"     A+ Score:    {score}/100 (base {base_score} + weekly +{wb})")
+        if weekly_bonus_info.get("nearest_level"):
+            nl = weekly_bonus_info["nearest_level"]
+            print(f"     Weekly Lvl:  {nl['label']} @ ${nl['price']:,.2f}")
 
         if dry_run:
             print(f"  📋 DRY RUN — trade logged but NOT executed")
@@ -656,11 +776,14 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                 "symbol": sym, "side": side, "qty": qty, "type": "dry_run",
                 "daily_bias": daily_bias, "entry": trade["entry"],
                 "exec_price": exec_price, "stop_loss": trade["stop_loss"],
-                "take_profit": trade["take_profit"], "a_plus_score": score,
+                "take_profit": trade["take_profit"],
+                "a_plus_score": score, "base_score": base_score,
+                "weekly_bonus": wb,
+                "weekly_level": weekly_bonus_info.get("reason"),
             }, action=f"dry_{side}")
             continue
 
-        # ── Step 6: Execute ───────────────────────────────────────────
+        # ── Step 7: Execute ───────────────────────────────────────────
         try:
             if side == "buy":
                 order = buy(sym, qty=qty, order_type="limit",

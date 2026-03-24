@@ -173,6 +173,213 @@ def compute_vwap(bars: list[dict]) -> list[float | None]:
     return result
 
 
+# ─── Liquidity Level Detection ────────────────────────────────────────────────
+
+def detect_swing_levels(bars: list[dict], lookback: int = 3) -> dict:
+    """
+    Find swing highs and swing lows — candles where the high/low is the
+    highest/lowest within `lookback` bars on each side.
+
+    Returns {"swing_highs": [(index, price, time), ...],
+             "swing_lows":  [(index, price, time), ...]}
+    """
+    n = len(bars)
+    highs = []
+    lows = []
+
+    for i in range(lookback, n - lookback):
+        h = float(bars[i]["high"])
+        l = float(bars[i]["low"])
+
+        is_swing_high = all(
+            h >= float(bars[i + d]["high"])
+            for d in range(-lookback, lookback + 1) if d != 0
+        )
+        is_swing_low = all(
+            l <= float(bars[i + d]["low"])
+            for d in range(-lookback, lookback + 1) if d != 0
+        )
+
+        if is_swing_high:
+            highs.append((i, round(h, 2), bars[i]["time"]))
+        if is_swing_low:
+            lows.append((i, round(l, 2), bars[i]["time"]))
+
+    return {"swing_highs": highs, "swing_lows": lows}
+
+
+def detect_equal_levels(bars: list[dict], tolerance_pct: float = 0.002) -> dict:
+    """
+    Find equal highs and equal lows — two or more bars with highs/lows
+    within `tolerance_pct` of each other. These are liquidity pools where
+    stops accumulate.
+
+    Returns {"equal_highs": [(price, count, bar_times), ...],
+             "equal_lows":  [(price, count, bar_times), ...]}
+    sorted by count (most touches first).
+    """
+    from collections import defaultdict
+
+    n = len(bars)
+    if n < 2:
+        return {"equal_highs": [], "equal_lows": []}
+
+    def _cluster(values_with_meta, tol_pct):
+        if not values_with_meta:
+            return []
+        sorted_vals = sorted(values_with_meta, key=lambda x: x[0])
+        clusters = []
+        current = [sorted_vals[0]]
+
+        for i in range(1, len(sorted_vals)):
+            price, _ = sorted_vals[i]
+            anchor = current[0][0]
+            if anchor > 0 and abs(price - anchor) / anchor <= tol_pct:
+                current.append(sorted_vals[i])
+            else:
+                if len(current) >= 2:
+                    avg_price = round(sum(p for p, _ in current) / len(current), 2)
+                    times = [t for _, t in current]
+                    clusters.append((avg_price, len(current), times))
+                current = [sorted_vals[i]]
+
+        if len(current) >= 2:
+            avg_price = round(sum(p for p, _ in current) / len(current), 2)
+            times = [t for _, t in current]
+            clusters.append((avg_price, len(current), times))
+
+        return sorted(clusters, key=lambda x: -x[1])
+
+    highs = [(float(b["high"]), b["time"]) for b in bars]
+    lows = [(float(b["low"]), b["time"]) for b in bars]
+
+    return {
+        "equal_highs": _cluster(highs, tolerance_pct),
+        "equal_lows": _cluster(lows, tolerance_pct),
+    }
+
+
+def detect_weekly_liquidity(weekly_bars: list[dict], current_price: float) -> dict:
+    """
+    Build the weekly liquidity map from weekly bars.
+
+    Identifies:
+      - Prior week high/low (PWH/PWL)
+      - Current week high/low developing
+      - Swing highs/lows on the weekly
+      - Equal highs/lows (stacked liquidity)
+      - Weekly FVGs (gaps between non-adjacent candle wicks)
+      - Nearest liquidity levels above and below current price
+
+    Args:
+        weekly_bars: list of weekly bar dicts
+        current_price: latest price for proximity calculations
+
+    Returns dict with all identified levels and proximity info.
+    """
+    if len(weekly_bars) < 3:
+        return {"levels": [], "nearest_above": None, "nearest_below": None,
+                "pwh": None, "pwl": None}
+
+    levels = []
+
+    # Prior week high/low
+    pw = weekly_bars[-2]
+    pwh = round(float(pw["high"]), 2)
+    pwl = round(float(pw["low"]), 2)
+    levels.append({"price": pwh, "type": "pwh", "label": "Prior Week High"})
+    levels.append({"price": pwl, "type": "pwl", "label": "Prior Week Low"})
+
+    # 2-weeks-ago high/low
+    if len(weekly_bars) >= 3:
+        pw2 = weekly_bars[-3]
+        levels.append({"price": round(float(pw2["high"]), 2), "type": "pw2h",
+                        "label": "2-Week-Ago High"})
+        levels.append({"price": round(float(pw2["low"]), 2), "type": "pw2l",
+                        "label": "2-Week-Ago Low"})
+
+    # Current week developing H/L
+    cw = weekly_bars[-1]
+    cwh = round(float(cw["high"]), 2)
+    cwl = round(float(cw["low"]), 2)
+
+    # Swing levels on weekly
+    swings = detect_swing_levels(weekly_bars, lookback=2)
+    for _, price, time in swings["swing_highs"][-5:]:
+        levels.append({"price": price, "type": "weekly_swing_high",
+                        "label": f"Weekly Swing High ({time})"})
+    for _, price, time in swings["swing_lows"][-5:]:
+        levels.append({"price": price, "type": "weekly_swing_low",
+                        "label": f"Weekly Swing Low ({time})"})
+
+    # Equal highs/lows on weekly
+    equals = detect_equal_levels(weekly_bars, tolerance_pct=0.003)
+    for price, count, times in equals["equal_highs"][:3]:
+        levels.append({"price": price, "type": "equal_highs",
+                        "label": f"Equal Highs x{count} (liquidity pool)"})
+    for price, count, times in equals["equal_lows"][:3]:
+        levels.append({"price": price, "type": "equal_lows",
+                        "label": f"Equal Lows x{count} (liquidity pool)"})
+
+    # Weekly FVGs — gap between bar[i] high and bar[i+2] low (bullish)
+    #               or bar[i] low and bar[i+2] high (bearish)
+    for i in range(len(weekly_bars) - 2):
+        b0_high = float(weekly_bars[i]["high"])
+        b0_low = float(weekly_bars[i]["low"])
+        b2_high = float(weekly_bars[i + 2]["high"])
+        b2_low = float(weekly_bars[i + 2]["low"])
+
+        if b2_low > b0_high:
+            gap_mid = round((b2_low + b0_high) / 2, 2)
+            gap_pct = (b2_low - b0_high) / b0_high
+            if gap_pct > 0.003:
+                levels.append({"price": gap_mid, "type": "weekly_fvg_bullish",
+                                "label": f"Weekly Bullish FVG ({weekly_bars[i+1]['time']})"})
+        elif b0_low > b2_high:
+            gap_mid = round((b0_low + b2_high) / 2, 2)
+            gap_pct = (b0_low - b2_high) / b2_high
+            if gap_pct > 0.003:
+                levels.append({"price": gap_mid, "type": "weekly_fvg_bearish",
+                                "label": f"Weekly Bearish FVG ({weekly_bars[i+1]['time']})"})
+
+    # Deduplicate levels within 0.1% of each other
+    unique = []
+    for lvl in sorted(levels, key=lambda x: x["price"]):
+        if not unique or abs(lvl["price"] - unique[-1]["price"]) / max(lvl["price"], 0.01) > 0.001:
+            unique.append(lvl)
+        else:
+            if lvl["type"] in ("pwh", "pwl", "equal_highs", "equal_lows"):
+                unique[-1] = lvl
+
+    # Find nearest above and below current price
+    above = [l for l in unique if l["price"] > current_price]
+    below = [l for l in unique if l["price"] < current_price]
+    nearest_above = min(above, key=lambda x: x["price"]) if above else None
+    nearest_below = max(below, key=lambda x: x["price"]) if below else None
+
+    # Proximity scoring
+    for lvl in unique:
+        dist_pct = abs(lvl["price"] - current_price) / current_price * 100
+        lvl["distance_pct"] = round(dist_pct, 2)
+        lvl["proximity"] = (
+            "AT_LEVEL" if dist_pct < 0.15 else
+            "VERY_CLOSE" if dist_pct < 0.5 else
+            "CLOSE" if dist_pct < 1.0 else
+            "NEARBY" if dist_pct < 2.0 else
+            "FAR"
+        )
+
+    return {
+        "levels": unique,
+        "nearest_above": nearest_above,
+        "nearest_below": nearest_below,
+        "pwh": pwh,
+        "pwl": pwl,
+        "current_week_high": cwh,
+        "current_week_low": cwl,
+    }
+
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 def summarize_indicators(bars: list[dict]) -> dict:

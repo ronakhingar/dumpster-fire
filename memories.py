@@ -38,7 +38,9 @@ MACRO_WINDOWS = [
 ]
 
 # ─── A+ Setup Scoring System ─────────────────────────────────────────────────
-# Each criterion adds points. Minimum 80/100 to qualify as A+.
+# Each criterion adds points. Base score out of 100; weekly liquidity
+# proximity can boost up to +25 bonus points, letting a B+ daily setup
+# qualify as A+ when a weekly liquidity magnet is in play.
 
 SCORE_CRITERIA = {
     "liquidity_sweep":       20,  # Price wicked past key H/L then reversed
@@ -50,6 +52,29 @@ SCORE_CRITERIA = {
     "ema_confirmation":       5,  # 9 EMA reclaim / crossover supports direction
     "vwap_confluence":        5,  # VWAP aligns with trade direction
     "rsi_not_extreme":        5,  # RSI not already overbought/oversold in entry direction
+}
+
+# Weekly liquidity proximity bonus — added on top of the base 100
+WEEKLY_LIQUIDITY_BONUS = {
+    "AT_LEVEL":    25,  # Price within 0.15% of weekly level — maximum confluence
+    "VERY_CLOSE":  20,  # Within 0.5%  — strong magnet pull
+    "CLOSE":       15,  # Within 1.0%  — notable confluence
+    "NEARBY":       5,  # Within 2.0%  — mild boost
+    "FAR":          0,  # Beyond 2.0%  — no bonus
+}
+
+# Extra bonus for specific high-value weekly level types
+WEEKLY_LEVEL_TYPE_BONUS = {
+    "pwh":              5,   # Prior week high — highest liquidity
+    "pwl":              5,   # Prior week low — highest liquidity
+    "equal_highs":      5,   # Stacked equal highs — stop pool
+    "equal_lows":       5,   # Stacked equal lows — stop pool
+    "weekly_fvg_bullish":  3,
+    "weekly_fvg_bearish":  3,
+    "weekly_swing_high":   2,
+    "weekly_swing_low":    2,
+    "pw2h":             1,
+    "pw2l":             1,
 }
 
 A_PLUS_THRESHOLD = 80
