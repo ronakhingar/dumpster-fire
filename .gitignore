@@ -1,3 +1,9 @@
 .env
 __pycache__/
 *.pyc
+.DS_Store
+journal/
+tt/
+*.mp4
+*.m4a
+*.crdownload

@@ -1,2 +1,73 @@
-# dumpster-fire
-trading bot which burns through tokens and cash like never before
+# dumpster-fire 🔥
+
+Autonomous trading agent for SPY/QQQ on Alpaca paper trading. Burns through tokens and cash like never before.
+
+## Architecture
+
+```
+agent.py              ← Main autonomous agent (scan → score → trade loop)
+├── analyze.py        ← Full analysis: indicators + setup detection + trade levels
+│   ├── indicator_engine.py  ← Deterministic EMA, RSI, MACD, ATR, VWAP
+│   └── alpaca_trader.py     ← Alpaca API wrapper (data + execution)
+├── memories.py       ← Trading knowledge base (A+ criteria, guardrails, killzones)
+└── journal.py        ← Persists every analysis and trade to disk as JSON
+```
+
+## Knowledge Base
+
+Distilled from TTT Mastermind 9 & 10 sessions, A+ Trade Rating Guide, Liquidity playbooks, and ICT concepts:
+
+- **A+ Scoring** — 9 criteria totaling 100 points. Only setups scoring ≥80 qualify.
+- **Killzones** — Asia, London, NY AM, NY Lunch, NY PM (ET times)
+- **Macro Windows** — 20-min high-probability algo bursts
+- **Guardrails** — max 2 trades/day, 5% position size, 2:1 min R:R, 2% daily loss limit, 30-min cooldown after loss
+
+## Setup
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env  # Add your Alpaca paper trading keys
+```
+
+## Usage
+
+```bash
+# Single scan-and-act cycle
+python3 agent.py
+
+# Dry run — analyze only, no trades
+python3 agent.py --dry-run
+
+# Continuous loop during market hours (15-min interval)
+python3 agent.py --loop
+
+# Loop with custom interval
+python3 agent.py --loop --interval 5
+
+# Standalone analysis
+python3 analyze.py SPY 1Day
+python3 analyze.py QQQ 1Day
+```
+
+## Guardrails
+
+| Rule | Value |
+|------|-------|
+| Max trades/day | 2 |
+| Max position size | 5% of equity |
+| Min risk:reward | 2:1 |
+| Daily loss limit | 2% of equity |
+| Stop loss | 1.5× ATR |
+| Cooldown after loss | 30 minutes |
+| Killzone required | Yes |
+| Liquidity sweep required | Yes |
+| MSS required | Yes |
+
+## Hard Rules (from playbooks)
+
+- No sweep = No trade
+- No confirmation = No entry
+- No displacement = No trade
+- Minimum 2:1 risk-reward or skip
+- Never long in premium, never short in discount
+- Skip choppy / unclear bias days
