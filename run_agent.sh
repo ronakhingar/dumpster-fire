@@ -17,4 +17,4 @@ echo "  CRON TRIGGER: $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG"
 echo "═══════════════════════════════════════════════════════════" >> "$LOG"
 
 cd "$DIR"
-/usr/bin/python3 agent.py --dry-run >> "$LOG" 2>&1
+/usr/bin/python3 agent.py >> "$LOG" 2>&1
