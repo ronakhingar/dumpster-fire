@@ -1,0 +1,53 @@
+{
+  "model": "claude-4.6-opus (1M context, thinking enabled)",
+  "build_sessions": [
+    {
+      "session": 1,
+      "date": "2026-03-24",
+      "description": "Initial build — read PDFs, created memories.py, indicator_engine.py, alpaca_trader.py, journal.py, analyze.py. Crashed mid-generation of agent.py",
+      "status": "crashed (JS heap OOM)",
+      "output_tokens_approx": 42810,
+      "input_tokens_approx": 85000,
+      "note": "42.81k output tokens shown at crash. Input includes 6 PDFs, 3 text files, session chats, and multi-turn conversation.",
+      "files_created": [
+        "memories.py",
+        "indicator_engine.py",
+        "alpaca_trader.py",
+        "journal.py",
+        "analyze.py",
+        "requirements.txt",
+        ".gitignore"
+      ]
+    },
+    {
+      "session": 2,
+      "date": "2026-03-24",
+      "description": "Recovery — built agent.py, updated README, cleaned repo, added multi-timeframe analysis, live quotes, cron scheduling, token tracking",
+      "status": "completed",
+      "output_tokens_approx": 55000,
+      "input_tokens_approx": 120000,
+      "note": "Estimate based on conversation length. Exact counts available in Cursor billing dashboard.",
+      "files_created": [
+        "agent.py",
+        "run_agent.sh",
+        "token_usage.json"
+      ],
+      "files_modified": [
+        "README.md",
+        ".gitignore",
+        "agent.py (v2 — multi-timeframe rewrite)"
+      ]
+    }
+  ],
+  "totals": {
+    "total_build_sessions": 2,
+    "total_output_tokens_approx": 97810,
+    "total_input_tokens_approx": 205000,
+    "total_tokens_approx": 302810,
+    "note": "These are estimates. The agent runs ZERO LLM tokens at runtime — all analysis is deterministic (math indicators + rule-based scoring). Token cost is build-only."
+  },
+  "runtime_token_cost": {
+    "llm_tokens_per_cycle": 0,
+    "explanation": "The agent is 100% deterministic at runtime. No LLM is called. Indicators are computed mathematically, setups detected by rules, scoring by memories.py criteria. The only API calls are to Alpaca (market data + execution), which are free on paper trading."
+  }
+}

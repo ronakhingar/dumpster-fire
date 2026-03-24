@@ -60,6 +60,75 @@ from memories import (
 
 ET = ZoneInfo("America/New_York")
 STATE_FILE = Path(__file__).parent / "journal" / "agent_state.json"
+CYCLE_LOG = Path(__file__).parent / "journal" / "cycle_stats.jsonl"
+
+# ─── Cycle stats tracker ─────────────────────────────────────────────────────
+
+class CycleStats:
+    """Tracks API calls, indicators, and compute used per scan cycle."""
+
+    def __init__(self):
+        self.start_time = datetime.now(ET)
+        self.alpaca_api_calls = 0
+        self.bars_fetched = 0
+        self.indicators_computed = 0
+        self.live_quotes = 0
+        self.symbols_analyzed = 0
+        self.setups_detected = 0
+        self.trades_executed = 0
+
+    def tick_api(self, count=1):
+        self.alpaca_api_calls += count
+
+    def tick_bars(self, count):
+        self.bars_fetched += count
+
+    def tick_indicators(self, count=1):
+        self.indicators_computed += count
+
+    def tick_quote(self):
+        self.live_quotes += 1
+        self.alpaca_api_calls += 1
+
+    def tick_analysis(self):
+        self.symbols_analyzed += 1
+        self.alpaca_api_calls += 1
+        self.indicators_computed += 5
+
+    def summary(self) -> dict:
+        elapsed = (datetime.now(ET) - self.start_time).total_seconds()
+        return {
+            "timestamp": self.start_time.isoformat(),
+            "elapsed_seconds": round(elapsed, 1),
+            "llm_tokens_used": 0,
+            "llm_model": "none (deterministic agent)",
+            "alpaca_api_calls": self.alpaca_api_calls,
+            "bars_fetched": self.bars_fetched,
+            "indicators_computed": self.indicators_computed,
+            "live_quotes_fetched": self.live_quotes,
+            "symbols_analyzed": self.symbols_analyzed,
+            "setups_detected": self.setups_detected,
+            "trades_executed": self.trades_executed,
+        }
+
+    def log(self):
+        """Append cycle stats to the JSONL log file."""
+        CYCLE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(CYCLE_LOG, "a") as f:
+            f.write(json.dumps(self.summary(), default=str) + "\n")
+
+    def print_summary(self):
+        s = self.summary()
+        print(f"\n  📊 CYCLE STATS")
+        print(f"     LLM tokens:     {s['llm_tokens_used']} ({s['llm_model']})")
+        print(f"     Alpaca API:     {s['alpaca_api_calls']} calls")
+        print(f"     Bars fetched:   {s['bars_fetched']}")
+        print(f"     Indicators:     {s['indicators_computed']} computations")
+        print(f"     Live quotes:    {s['live_quotes_fetched']}")
+        print(f"     Symbols:        {s['symbols_analyzed']} analyzed")
+        print(f"     Setups found:   {s['setups_detected']}")
+        print(f"     Trades:         {s['trades_executed']}")
+        print(f"     Elapsed:        {s['elapsed_seconds']}s")
 
 # ─── Time helpers ─────────────────────────────────────────────────────────────
 
@@ -455,6 +524,8 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
       3. Live quote → execution price confirmation
       4. A+ scoring + guardrails → go/no-go
     """
+    stats = CycleStats()
+
     print(f"\n{'━'*72}")
     print(f"  AGENT CYCLE  |  {_now_et().strftime('%Y-%m-%d %H:%M:%S ET')}")
     if dry_run:
@@ -463,6 +534,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
     # ── Pre-flight ────────────────────────────────────────────────────────
     acct = get_account()
+    stats.tick_api()
     equity = acct["equity"]
 
     preflight = [
@@ -482,6 +554,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
     # ── Manage existing positions (uses live price) ───────────────────────
     manage_positions(dry_run=dry_run)
+    stats.tick_api()
 
     # ── Multi-timeframe analysis ──────────────────────────────────────────
     results = []
@@ -494,6 +567,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         try:
             bias_data = get_daily_bias(sym)
             daily_bias = bias_data["bias"]
+            stats.tick_analysis()
         except Exception as e:
             print(f"  ⚠ Daily analysis failed for {sym}: {e}")
             continue
@@ -506,6 +580,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         # ── Step 2: Intraday entry scan ───────────────────────────────
         try:
             intraday = get_intraday_analysis(sym, daily_bias)
+            stats.tick_analysis()
         except Exception as e:
             print(f"  ⚠ Intraday analysis failed for {sym}: {e}")
             continue
@@ -523,6 +598,8 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         if intraday["recommendation"] not in ("buy", "sell"):
             print(f"  ⏭ No actionable intraday setup — rec: {intraday['recommendation']}")
             continue
+
+        stats.setups_detected += 1
 
         # ── Step 3: A+ Scoring ────────────────────────────────────────
         score, checks = score_setup(intraday, daily_bias)
@@ -545,6 +622,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
             continue
 
         live = get_live_price(sym)
+        stats.tick_quote()
         if live:
             live_mid = (live["bid"] + live["ask"]) / 2
             entry_price = trade["entry"]
@@ -592,13 +670,18 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                              limit_price=exec_price)
 
             _record_trade()
+            stats.trades_executed += 1
+            stats.tick_api()
             print(f"  ✓ Order placed: {order['id']}")
 
         except Exception as e:
             print(f"  ✗ Order failed: {e}")
 
-    # ── Summary ───────────────────────────────────────────────────────────
+    # ── Summary + stats ───────────────────────────────────────────────────
     state = _get_daily_state()
+    stats.print_summary()
+    stats.log()
+
     print(f"\n{'━'*72}")
     print(f"  CYCLE COMPLETE  |  {_now_et().strftime('%H:%M:%S ET')}")
     print(f"  Trades today: {state.get('trades_taken', 0)}/{GUARDRAILS['max_trades_per_day']}")
