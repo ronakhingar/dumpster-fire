@@ -8,3 +8,4 @@ playbooks/
 *.mp4
 *.m4a
 *.crdownload
+*.log
