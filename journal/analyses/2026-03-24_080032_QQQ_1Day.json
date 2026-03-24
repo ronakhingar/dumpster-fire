@@ -1,0 +1,38 @@
+{
+  "symbol": "QQQ",
+  "timeframe": "1Day",
+  "as_of": "2026-03-24 00:00:00-04:00",
+  "market_state": {
+    "price": 584.48,
+    "ema_9": 592.41,
+    "ema_21": 598.81,
+    "ema_50": 607.77,
+    "rsi_14": 38.23,
+    "macd": -6.0546,
+    "macd_signal": -4.3542,
+    "macd_histogram": -1.7004,
+    "atr_14": 10.12,
+    "vwap": 609.32,
+    "summary": "Price $584.48 is below EMA-9 ($592.41), below EMA-21 ($598.81), below EMA-50 ($607.77). Strong downtrend \u2014 all EMAs stacked bearish. RSI 38.2 \u2014 neutral zone. MACD histogram -1.7004 \u2014 bearish momentum. ATR $10.12 (1.7% of price)."
+  },
+  "detected_setup": "none",
+  "recommendation": "no_trade",
+  "confidence": 0,
+  "trade": {
+    "entry": null,
+    "stop_loss": null,
+    "take_profit": null,
+    "risk_reward": null,
+    "position_size_suggestion": null
+  },
+  "reasons_for": [
+    "RSI 38.2 approaching oversold \u2014 mean reversion upside likely",
+    "Price 4.1% below VWAP $609.32 \u2014 discount to fair value"
+  ],
+  "reasons_against": [
+    "Price below EMA-9 ($592.41) \u2014 short-term trend still down",
+    "Price below EMA-50 ($607.77) \u2014 major trend resistance overhead",
+    "MACD histogram -1.7004 negative \u2014 momentum still bearish"
+  ],
+  "final_action": "no trade \u2014 no actionable setup on current bars"
+}

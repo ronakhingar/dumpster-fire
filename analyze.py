@@ -15,6 +15,7 @@ from alpaca_trader import get_historical_bars, get_quote, ALLOWED_SYMBOLS
 from indicator_engine import (
     compute_ema, compute_rsi, compute_macd, compute_atr, compute_vwap,
 )
+from journal import log_analysis
 
 
 # ─── Internals ───────────────────────────────────────────────────────────────
@@ -387,6 +388,7 @@ def analyze(symbol: str, timeframe: str = "1Day", lookback_days: int = 90) -> di
     }
 
     _print_analysis(result)
+    log_analysis(result)
     return result
 
 

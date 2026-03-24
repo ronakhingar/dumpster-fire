@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 import alpaca_trade_api as tradeapi
+from journal import log_trade
 
 load_dotenv()
 
@@ -214,6 +215,7 @@ def _place_order(symbol, qty, side, order_type, limit_price, time_in_force):
     lp = f" @ {_fmt(limit_price)}" if limit_price else ""
     print(f"\n  ✓ {side.upper()} {qty} {sym} {order_type}{lp}  "
           f"tif={time_in_force}  status={order.status}  id={order.id}")
+    log_trade(result, action=side)
     return result
 
 
@@ -261,7 +263,9 @@ def close_position(symbol):
     api.close_position(sym)
     pnl = float(pos.unrealized_pl)
     print(f"\n  ✓ Closed {pos.qty} shares of {sym}  P&L: {'+' if pnl >= 0 else ''}{_fmt(pnl)}")
-    return {"symbol": sym, "qty_closed": float(pos.qty), "pnl": pnl}
+    result = {"symbol": sym, "qty_closed": float(pos.qty), "pnl": pnl, "side": "close"}
+    log_trade(result, action="close")
+    return result
 
 
 # ─── Open Orders / Cancel ────────────────────────────────────────────────────
@@ -301,6 +305,7 @@ def cancel_order(order_id):
     """Cancel a specific order by ID."""
     api.cancel_order(order_id)
     print(f"\n  ✓ Cancelled order {order_id}")
+    log_trade({"order_id": order_id, "symbol": "UNK"}, action="cancel")
 
 
 def cancel_all_orders():

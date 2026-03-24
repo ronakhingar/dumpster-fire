@@ -1,0 +1,38 @@
+{
+  "symbol": "SPY",
+  "timeframe": "1Day",
+  "as_of": "2026-03-24 00:00:00-04:00",
+  "market_state": {
+    "price": 653.89,
+    "ema_9": 660.81,
+    "ema_21": 669.52,
+    "ema_50": 678.9,
+    "rsi_14": 35.38,
+    "macd": -8.2705,
+    "macd_signal": -6.1922,
+    "macd_histogram": -2.0783,
+    "atr_14": 9.57,
+    "vwap": 682.5,
+    "summary": "Price $653.89 is below EMA-9 ($660.81), below EMA-21 ($669.52), below EMA-50 ($678.90). Strong downtrend \u2014 all EMAs stacked bearish. RSI 35.4 \u2014 neutral zone. MACD histogram -2.0783 \u2014 bearish momentum. ATR $9.57 (1.5% of price)."
+  },
+  "detected_setup": "none",
+  "recommendation": "no_trade",
+  "confidence": 0,
+  "trade": {
+    "entry": null,
+    "stop_loss": null,
+    "take_profit": null,
+    "risk_reward": null,
+    "position_size_suggestion": null
+  },
+  "reasons_for": [
+    "RSI 35.4 approaching oversold \u2014 mean reversion upside likely",
+    "Price 4.2% below VWAP $682.50 \u2014 discount to fair value"
+  ],
+  "reasons_against": [
+    "Price below EMA-9 ($660.81) \u2014 short-term trend still down",
+    "Price below EMA-50 ($678.90) \u2014 major trend resistance overhead",
+    "MACD histogram -2.0783 negative \u2014 momentum still bearish"
+  ],
+  "final_action": "no trade \u2014 no actionable setup on current bars"
+}
