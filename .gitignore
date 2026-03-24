@@ -4,6 +4,7 @@ __pycache__/
 .DS_Store
 journal/
 tt/
+playbooks/
 *.mp4
 *.m4a
 *.crdownload
