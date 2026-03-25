@@ -2,28 +2,33 @@
 """
 Autonomous trading agent for SPY/QQQ on Alpaca paper.
 
-Three-timeframe approach:
-  - Weekly (1Week) bars for liquidity map (PWH/PWL, equal H/L, swing levels, FVGs)
-  - Daily (1Day) bars for directional bias
-  - Intraday (15Min) bars for entry signals
+Multi-timeframe approach:
+  - Monthly (1Month) bars for macro liquidity map
+  - Weekly  (1Week)  bars for liquidity map (PWH/PWL, equal H/L, swing levels, FVGs)
+  - Daily   (1Day)   bars for directional bias
+  - Intraday cascade for entries:
+      15Min → structure/context
+       5Min → setup confirmation
+       1Min → precise entry timing
   - Real-time quotes for execution pricing
 
 Orchestrates the full loop:
   1. Pre-flight checks (market open, killzone, daily limits)
-  2. Weekly liquidity map — identify where the big pools sit
+  2. Monthly + Weekly liquidity maps — identify where the big pools sit
   3. Daily bias analysis — determine if we're bullish, bearish, or flat
-  4. Intraday scan on 15Min bars for entry setups
+  4. Cascading intraday scan (15Min→5Min→2Min) for entry setups
   5. Real-time quote to confirm price hasn't gapped away
-  6. Score setup against A+ criteria + weekly liquidity proximity bonus
+  6. Score setup against A+ criteria + HTF liquidity proximity bonus
   7. Enforce guardrails (position sizing, R:R, loss limits, cooldown)
   8. Execute qualifying trades via alpaca_trader.py
   9. Manage open positions (stop/target exits using live price)
   10. Journal everything
 
 Run modes:
-  python3 agent.py              # single scan + act cycle
-  python3 agent.py --loop       # continuous loop during killzones
-  python3 agent.py --dry-run    # analyze only, no execution
+  python3 agent.py                     # single scan + act cycle
+  python3 agent.py --loop              # continuous loop (2-min scans)
+  python3 agent.py --loop --interval 5 # custom interval
+  python3 agent.py --dry-run           # analyze only, no execution
 """
 
 from __future__ import annotations
@@ -470,22 +475,72 @@ def get_daily_bias(symbol: str) -> dict:
 
 def get_intraday_analysis(symbol: str, daily_bias: str) -> dict | None:
     """
-    Run 15Min intraday analysis. Only look for setups that align with
-    the daily bias (no counter-trend trades).
+    Cascading intraday analysis across three timeframes:
+      15Min → intraday structure/context
+      5Min  → setup confirmation
+      1Min  → precise entry timing
+
+    Uses the shortest timeframe that shows a valid, aligned setup.
+    If no setup on any timeframe, returns the 15Min analysis (or None
+    if counter-trend).
     """
-    print(f"\n  ⏱ INTRADAY (15Min) for {symbol}  [daily bias: {daily_bias}]")
-    intraday = analyze(symbol, timeframe="15Min", lookback_days=5)
+    # ── 15Min: Intraday context ───────────────────────────────────────
+    print(f"\n  ⏱ INTRADAY for {symbol}  [daily bias: {daily_bias}]")
+    print(f"     Scanning 15Min → 5Min → 1Min (best setup wins)")
 
-    rec = intraday["recommendation"]
+    tf_15 = analyze(symbol, timeframe="15Min", lookback_days=5)
+    rec_15 = tf_15["recommendation"]
 
-    if daily_bias == "bullish" and rec == "sell":
-        print(f"     ⏭ Intraday says SELL but daily bias is BULLISH — skipping counter-trend")
+    if daily_bias == "bullish" and rec_15 == "sell":
+        print(f"     ⏭ 15Min says SELL but daily bias is BULLISH — skipping counter-trend")
         return None
-    if daily_bias == "bearish" and rec == "buy":
-        print(f"     ⏭ Intraday says BUY but daily bias is BEARISH — skipping counter-trend")
+    if daily_bias == "bearish" and rec_15 == "buy":
+        print(f"     ⏭ 15Min says BUY but daily bias is BEARISH — skipping counter-trend")
         return None
 
-    return intraday
+    # ── 5Min: Setup confirmation ──────────────────────────────────────
+    tf_5 = analyze(symbol, timeframe="5Min", lookback_days=2)
+    rec_5 = tf_5["recommendation"]
+
+    is_counter_5 = (
+        (daily_bias == "bullish" and rec_5 == "sell") or
+        (daily_bias == "bearish" and rec_5 == "buy")
+    )
+
+    # ── 1Min: Precise entry ───────────────────────────────────────────
+    tf_1 = analyze(symbol, timeframe="1Min", lookback_days=1)
+    rec_1 = tf_1["recommendation"]
+
+    is_counter_1 = (
+        (daily_bias == "bullish" and rec_1 == "sell") or
+        (daily_bias == "bearish" and rec_1 == "buy")
+    )
+
+    # ── Pick the best aligned setup (prefer shortest timeframe) ───────
+    best = None
+    best_tf = None
+
+    if rec_1 in ("buy", "sell") and not is_counter_1:
+        best = tf_1
+        best_tf = "1Min"
+    elif rec_5 in ("buy", "sell") and not is_counter_5:
+        best = tf_5
+        best_tf = "5Min"
+    elif rec_15 in ("buy", "sell"):
+        best = tf_15
+        best_tf = "15Min"
+
+    print(f"\n     15Min: setup={tf_15.get('detected_setup','none'):<22} rec={rec_15:<10} conf={tf_15.get('confidence',0)}")
+    print(f"      5Min: setup={tf_5.get('detected_setup','none'):<22} rec={rec_5:<10} conf={tf_5.get('confidence',0)}")
+    print(f"      1Min: setup={tf_1.get('detected_setup','none'):<22} rec={rec_1:<10} conf={tf_1.get('confidence',0)}")
+
+    if best:
+        print(f"     ➤ Using {best_tf} — {best.get('detected_setup','none')} ({best['recommendation']})")
+    else:
+        print(f"     ➤ No aligned setup on any intraday timeframe")
+        return tf_15
+
+    return best
 
 
 def get_weekly_context(symbol: str, current_price: float) -> dict:
@@ -1004,8 +1059,8 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
 # ─── Loop mode ────────────────────────────────────────────────────────────────
 
-def run_loop(dry_run: bool = False, interval_min: int = 5):
-    """Run scan_and_act in a loop, sleeping between killzones."""
+def run_loop(dry_run: bool = False, interval_min: int = 2):
+    """Run scan_and_act in a loop, scanning every interval_min during killzones."""
     print(f"\n  🔄 Agent starting in loop mode (interval: {interval_min}min)")
     print(f"     Dry run: {dry_run}")
     print(f"     Symbols: {sorted(ALLOWED_SYMBOLS)}")
@@ -1045,8 +1100,8 @@ def main():
                         help="Run continuously, auto-waking for killzones")
     parser.add_argument("--dry-run", action="store_true",
                         help="Analyze only — do not place any trades")
-    parser.add_argument("--interval", type=int, default=5,
-                        help="Minutes between scans during killzones (default: 5)")
+    parser.add_argument("--interval", type=int, default=2,
+                        help="Minutes between scans during killzones (default: 2)")
     args = parser.parse_args()
 
     if args.loop:
