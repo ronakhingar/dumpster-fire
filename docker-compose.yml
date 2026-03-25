@@ -1,0 +1,18 @@
+services:
+  trading-db:
+    image: postgres:16-alpine
+    container_name: trading-db
+    restart: unless-stopped
+    ports:
+      - "25433:5432"
+    environment:
+      POSTGRES_DB: trading
+      POSTGRES_USER: trading_agent
+      POSTGRES_PASSWORD: ${TRADING_DB_PASSWORD}
+    volumes:
+      - trading_pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+
+volumes:
+  trading_pgdata:
+    name: trading_pgdata
