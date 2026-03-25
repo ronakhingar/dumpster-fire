@@ -18,6 +18,7 @@ agent.py              ← Main autonomous agent (scan → score → trade loop)
 Distilled from TTT Mastermind 9 & 10 sessions, A+ Trade Rating Guide, Liquidity playbooks, and ICT concepts:
 
 - **A+ Scoring** — 9 criteria totaling 100 points + up to 45 HTF bonus. Only setups scoring ≥80 qualify.
+- **Self-Learning** — Daily review adjusts criteria weights based on actual win/loss outcomes
 - **Killzones** — Asia, London, NY AM, NY Lunch, NY PM (ET times)
 - **Macro Windows** — 20-min high-probability algo bursts
 - **Guardrails** — max 2 trades/day, 5% position size, 2:1 min R:R, 2% daily loss limit, 30-min cooldown after loss
@@ -49,6 +50,23 @@ The agent runs as a macOS LaunchAgent service - auto-starts on boot, scans every
 ```
 
 See [AGENT_SERVICE.md](AGENT_SERVICE.md) for full documentation.
+
+## Self-Learning System
+
+Agent reviews daily performance and adjusts scoring weights:
+
+```bash
+# View learned weights
+cat learned_weights.json
+
+# View today's review
+cat journal/reviews/review_$(date +%Y-%m-%d).md
+
+# Reset weights to defaults
+python3 daily_review.py --reset
+```
+
+See [LEARNING_SYSTEM.md](LEARNING_SYSTEM.md) for full documentation.
 
 ## Manual Usage
 

@@ -73,6 +73,26 @@ from memories import (
     HARD_RULES,
 )
 
+# Load learned weights if they exist
+def _load_scoring_weights():
+    """Load learned weights or fall back to defaults."""
+    weights_file = Path(__file__).parent / "learned_weights.json"
+    if weights_file.exists():
+        try:
+            with open(weights_file, "r") as f:
+                learned = json.load(f)
+                print(f"  🎓 Loaded learned weights (v{learned['meta']['version']}, "
+                      f"updated {learned['meta']['last_updated'][:10]})")
+                return (learned["criteria_weights"],
+                        learned["weekly_liquidity_bonus"],
+                        learned["monthly_liquidity_bonus"])
+        except Exception as e:
+            print(f"  ⚠ Could not load learned weights: {e}. Using defaults.")
+    return SCORE_CRITERIA, WEEKLY_LIQUIDITY_BONUS, MONTHLY_LIQUIDITY_BONUS
+
+# Initialize scoring weights (learned or default)
+ACTIVE_SCORE_CRITERIA, ACTIVE_WEEKLY_BONUS, ACTIVE_MONTHLY_BONUS = _load_scoring_weights()
+
 ET = ZoneInfo("America/New_York")
 STATE_FILE = Path(__file__).parent / "journal" / "agent_state.json"
 CYCLE_LOG = Path(__file__).parent / "journal" / "cycle_stats.jsonl"
@@ -362,9 +382,10 @@ def score_setup(
     else:
         checks["rsi_not_extreme"] = False
 
-    base_score = sum(SCORE_CRITERIA[k] for k, met in checks.items() if met)
+    base_score = sum(ACTIVE_SCORE_CRITERIA[k] for k, met in checks.items() if met)
 
     # ── HTF liquidity proximity bonus (weekly + monthly, capped) ──────
+    # Use active (learned) bonus tables
     def _best_htf_bonus(context, prox_table, type_table):
         if not context or not context.get("levels"):
             return 0, None
@@ -391,8 +412,8 @@ def score_setup(
                 best_level = lvl
         return best_bonus, best_level
 
-    w_bonus, w_level = _best_htf_bonus(weekly_context, WEEKLY_LIQUIDITY_BONUS, WEEKLY_LEVEL_TYPE_BONUS)
-    m_bonus, m_level = _best_htf_bonus(monthly_context, MONTHLY_LIQUIDITY_BONUS, MONTHLY_LEVEL_TYPE_BONUS)
+    w_bonus, w_level = _best_htf_bonus(weekly_context, ACTIVE_WEEKLY_BONUS, WEEKLY_LEVEL_TYPE_BONUS)
+    m_bonus, m_level = _best_htf_bonus(monthly_context, ACTIVE_MONTHLY_BONUS, MONTHLY_LEVEL_TYPE_BONUS)
 
     combined_htf = min(w_bonus + m_bonus, HTF_BONUS_CAP)
 
@@ -912,7 +933,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
         # ── Step 4: A+ Scoring + HTF Liquidity Bonus ─────────────────
         score, checks, htf_info = score_setup(intraday, daily_bias, weekly_ctx, monthly_ctx)
-        base_score = sum(SCORE_CRITERIA[k] for k, met in checks.items() if met)
+        base_score = sum(ACTIVE_SCORE_CRITERIA[k] for k, met in checks.items() if met)
         wb = htf_info.get("weekly_bonus", 0)
         mb = htf_info.get("monthly_bonus", 0)
         htf_total = htf_info.get("combined_bonus", 0)
@@ -920,7 +941,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         print(f"\n  A+ SCORE: {score}  (base: {base_score} + weekly: +{wb} + monthly: +{mb} = +{htf_total} HTF)")
         print(f"  Threshold: {A_PLUS_THRESHOLD}  |  HTF cap: {HTF_BONUS_CAP}")
         for criterion, met in checks.items():
-            pts = SCORE_CRITERIA[criterion]
+            pts = ACTIVE_SCORE_CRITERIA[criterion]
             mark = "✓" if met else "✗"
             print(f"    {mark} {criterion}: {pts}pts")
         if wb > 0:
