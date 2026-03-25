@@ -147,7 +147,7 @@ Persisted learned weights:
 ```
 
 ### `journal/reviews/review_YYYY-MM-DD.md`
-Daily review reports:
+Daily review reports with detailed reasoning:
 ```markdown
 # Daily Review - 2026-03-25
 
@@ -166,7 +166,27 @@ Daily review reports:
 - premium_discount: 10 → 13 (+3)
 - vwap_confluence: 5 → 7 (+2)
 ...
+
+## Detailed Change Log
+
+### premium_discount: 10 → 13 (+3)
+
+**Increased** because:
+- Win rate when present: **80%** (4W/1L)
+- Win rate when absent: **40%** (2W/3L)
+- Correlation: **+0.400** (positive)
+- Trades analyzed: 10
+
+...
 ```
+
+### `journal/learning_history.jsonl`
+Append-only log tracking every weight change with full context:
+```jsonl
+{"timestamp": "2026-03-25T16:30:00-04:00", "date": "2026-03-25", "version": 2, "total_trades_analyzed": 10, "changes": [{"criterion": "premium_discount", "old_weight": 10, "new_weight": 13, "change": 3, "win_rate_when_present": 0.8, "win_rate_when_absent": 0.4, "correlation": 0.4, "present_record": "4W-1L", "absent_record": "2W-3L", "trades_analyzed": 10, "reason": "Increased because win rate was 80% when present (4W/1L) vs 40% when absent (2W/3L) over 10 trades. Correlation: +0.400"}]}
+```
+
+Use `view_learning_history.py` to analyze this data (see below).
 
 ---
 
@@ -206,7 +226,22 @@ python3 daily_review.py --reset
 cat learned_weights.json | jq '.criteria_weights'
 ```
 
-### View Weight History
+### View Learning History
+```bash
+# Show all weight changes with detailed reasoning
+python3 view_learning_history.py
+
+# Show last 5 days of changes
+python3 view_learning_history.py --recent 5
+
+# Track a specific criterion over time
+python3 view_learning_history.py --criterion liquidity_sweep
+
+# Show summary of all changes across criteria
+python3 view_learning_history.py --summary
+```
+
+### View Daily Review Reports
 ```bash
 # List all reviews
 ls -lt journal/reviews/
@@ -243,6 +278,63 @@ for f in journal/reviews/*.md; do
     echo
 done
 ```
+
+---
+
+## Learning History Tracking
+
+Every time weights are adjusted, the system logs:
+- **What changed**: Old weight → New weight for each criterion
+- **When**: Timestamp and date of the change
+- **Why**: Win rates, correlation, number of trades, and reasoning statement
+
+This creates a complete audit trail of the learning process.
+
+### Example Learning History Entry
+
+```
+📅 2026-03-25 (Version 2) — 2 weight change(s), 10 trades analyzed
+
+  ↑ premium_discount: 10 → 13 (+3)
+     Increased because win rate was 80% when present (4W/1L) vs 40% when
+     absent (2W/3L) over 10 trades. Correlation: +0.400
+
+  ↓ liquidity_sweep: 20 → 18 (-2)
+     Decreased because win rate was 33% when present (1W/2L) vs 67% when
+     absent (4W/2L) over 10 trades. Correlation: -0.333
+```
+
+### Tracking a Specific Criterion
+
+```bash
+$ python3 view_learning_history.py --criterion premium_discount
+
+TRACKING: premium_discount
+
+Weight Evolution:
+
+1. 2026-03-25: 10 → 13 (↑3)
+   Present: 4W-1L, Absent: 2W-3L
+   Correlation: +0.400
+
+2. 2026-03-28: 13 → 15 (↑2)
+   Present: 7W-1L, Absent: 3W-5L
+   Correlation: +0.500
+
+3. 2026-04-02: 15 → 14 (-1)
+   Present: 5W-4L, Absent: 6W-2L
+   Correlation: -0.194
+```
+
+### Understanding the Learning Process
+
+The history shows:
+- **Positive correlation** → weight increases (criterion helps win trades)
+- **Negative correlation** → weight decreases (criterion doesn't help or hurts)
+- **Confidence threshold** prevents overweighting based on lucky wins
+- **Learning rate** smooths changes to avoid overreaction
+
+You can see exactly how the agent is learning what works and adapting its strategy over time.
 
 ---
 

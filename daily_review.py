@@ -33,6 +33,7 @@ ET = ZoneInfo("America/New_York")
 JOURNAL_DIR = Path(__file__).parent / "journal"
 WEIGHTS_FILE = Path(__file__).parent / "learned_weights.json"
 REVIEWS_DIR = Path(__file__).parent / "journal" / "reviews"
+LEARNING_HISTORY_FILE = Path(__file__).parent / "journal" / "learning_history.jsonl"
 
 # Learning parameters
 LEARNING_RATE = 0.15  # How fast to adjust weights (0.1-0.3 recommended)
@@ -77,6 +78,83 @@ def save_learned_weights(weights: dict):
     with open(WEIGHTS_FILE, "w") as f:
         json.dump(weights, f, indent=2)
     print(f"  💾 Saved learned weights to {WEIGHTS_FILE}")
+
+
+def log_weight_changes(analysis: dict, old_weights: dict, new_weights: dict,
+                       num_trades: int):
+    """
+    Append weight change details to learning history JSONL file.
+
+    Tracks what changed, when, and why for each weight adjustment.
+    Each line is a JSON object with timestamp and detailed reasoning.
+    """
+    LEARNING_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now(ET).isoformat()
+
+    changes = []
+    for criterion, stats in analysis.items():
+        old_w = old_weights["criteria_weights"][criterion]
+        new_w = new_weights[criterion]
+
+        if old_w != new_w:
+            change = new_w - old_w
+
+            # Build reasoning statement
+            win_rate_present = stats["win_rate_when_present"]
+            win_rate_absent = stats["win_rate_when_absent"]
+            correlation = stats["correlation"]
+            present_wins = stats["present_wins"]
+            present_losses = stats["present_losses"]
+            absent_wins = stats["absent_wins"]
+            absent_losses = stats["absent_losses"]
+
+            total_present = present_wins + present_losses
+            total_absent = absent_wins + absent_losses
+
+            # Determine reasoning
+            if change > 0:
+                reason = (f"Increased because win rate was {win_rate_present:.0%} when present "
+                         f"({present_wins}W/{present_losses}L) vs {win_rate_absent:.0%} when absent "
+                         f"({absent_wins}W/{absent_losses}L) over {num_trades} trades. "
+                         f"Correlation: {correlation:+.3f}")
+            elif change < 0:
+                reason = (f"Decreased because win rate was {win_rate_present:.0%} when present "
+                         f"({present_wins}W/{present_losses}L) vs {win_rate_absent:.0%} when absent "
+                         f"({absent_wins}W/{absent_losses}L) over {num_trades} trades. "
+                         f"Correlation: {correlation:+.3f}")
+            else:
+                continue  # No change, skip
+
+            change_entry = {
+                "criterion": criterion,
+                "old_weight": old_w,
+                "new_weight": new_w,
+                "change": change,
+                "win_rate_when_present": win_rate_present,
+                "win_rate_when_absent": win_rate_absent,
+                "correlation": correlation,
+                "present_record": f"{present_wins}W-{present_losses}L",
+                "absent_record": f"{absent_wins}W-{absent_losses}L",
+                "trades_analyzed": num_trades,
+                "reason": reason,
+            }
+            changes.append(change_entry)
+
+    if changes:
+        log_entry = {
+            "timestamp": timestamp,
+            "date": datetime.now(ET).strftime("%Y-%m-%d"),
+            "version": old_weights["meta"]["version"] + 1,
+            "total_trades_analyzed": num_trades,
+            "changes": changes,
+        }
+
+        # Append to JSONL file
+        with open(LEARNING_HISTORY_FILE, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+
+        print(f"  📝 Logged {len(changes)} weight changes to learning history")
 
 
 # ─── Collect Trade Data ───────────────────────────────────────────────────────
@@ -404,6 +482,45 @@ def generate_review_report(trades: list[dict], analysis: dict,
 
     report += f"""
 
+## Detailed Change Log
+
+"""
+
+    detailed_changes = []
+    for criterion in sorted(analysis.keys()):
+        stats = analysis[criterion]
+        old_w = old_weights["criteria_weights"][criterion]
+        new_w = new_weights[criterion]
+
+        if old_w != new_w:
+            change = new_w - old_w
+            win_rate_present = stats["win_rate_when_present"]
+            win_rate_absent = stats["win_rate_when_absent"]
+            correlation = stats["correlation"]
+            present_wins = stats["present_wins"]
+            present_losses = stats["present_losses"]
+            absent_wins = stats["absent_wins"]
+            absent_losses = stats["absent_losses"]
+
+            direction = "Increased" if change > 0 else "Decreased"
+            detailed_changes.append(
+                f"### {criterion}: {old_w} → {new_w} ({change:+d})\n\n"
+                f"**{direction}** because:\n"
+                f"- Win rate when present: **{win_rate_present:.0%}** "
+                f"({present_wins}W/{present_losses}L)\n"
+                f"- Win rate when absent: **{win_rate_absent:.0%}** "
+                f"({absent_wins}W/{absent_losses}L)\n"
+                f"- Correlation: **{correlation:+.3f}** "
+                f"({'positive' if correlation > 0 else 'negative'})\n"
+                f"- Trades analyzed: {len([t for t in trades if t['outcome'] in ('win', 'loss')])}\n"
+            )
+
+    if detailed_changes:
+        report += "\n".join(detailed_changes)
+    else:
+        report += "No weight changes this review.\n"
+
+    report += f"""
 ## Learning Parameters
 
 - Learning Rate: {LEARNING_RATE}
@@ -480,6 +597,9 @@ def run_daily_review():
     # Adjust weights
     print(f"\n  ⚙️  Adjusting weights based on performance...")
     new_criteria_weights = adjust_weights(analysis, current_weights)
+
+    # Log weight changes with detailed reasoning
+    log_weight_changes(analysis, current_weights, new_criteria_weights, len(trades))
 
     # Update weights dict
     updated_weights = {

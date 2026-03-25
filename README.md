@@ -62,6 +62,12 @@ cat learned_weights.json
 # View today's review
 cat journal/reviews/review_$(date +%Y-%m-%d).md
 
+# View learning history (what changed, when, and why)
+python3 view_learning_history.py
+
+# Track a specific criterion over time
+python3 view_learning_history.py --criterion premium_discount
+
 # Reset weights to defaults
 python3 daily_review.py --reset
 ```
