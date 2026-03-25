@@ -1,31 +1,13 @@
 #!/bin/bash
-# Schedule Daily Review - Run after market close
+# Schedule Weekly Review - Run every Saturday
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
-# Market closes at 4:00 PM ET (1:00 PM PT)
-# Run review at 4:30 PM ET (1:30 PM PT) to ensure all data is settled
+# Run review on Saturday at 4:30 PM ET (1:30 PM PT)
+# Market is closed on weekends, so no need to wait
 
-# Wait until market is closed
-while true; do
-    IS_OPEN=$(python3 -c "from alpaca_trader import api; print('yes' if api.get_clock().is_open else 'no')" 2>/dev/null)
-
-    if [ "$IS_OPEN" = "no" ]; then
-        echo "[$(date)] Market is closed. Starting daily review..."
-        break
-    fi
-
-    echo "[$(date)] Market still open. Waiting 5 minutes..."
-    sleep 300
-done
-
-# Wait an additional 30 minutes to ensure all settlements are complete
-echo "[$(date)] Waiting 30 min for settlement..."
-sleep 1800
-
-# Run the review
-echo "[$(date)] Running daily review..."
+echo "[$(date)] Starting weekly review..."
 python3 "$SCRIPT_DIR/daily_review.py"
 
 EXIT_CODE=$?

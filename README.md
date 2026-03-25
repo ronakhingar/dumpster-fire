@@ -53,7 +53,7 @@ See [AGENT_SERVICE.md](AGENT_SERVICE.md) for full documentation.
 
 ## Self-Learning System
 
-Agent reviews daily performance and adjusts scoring weights:
+Agent reviews weekly performance (Saturdays) and adjusts scoring weights:
 
 ```bash
 # View learned weights

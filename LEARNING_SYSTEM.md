@@ -2,17 +2,17 @@
 
 ## Overview
 
-The agent includes a **self-learning system** that reviews daily performance and automatically adjusts A+ scoring criteria weights based on what actually works in live trading.
+The agent includes a **self-learning system** that reviews weekly performance and automatically adjusts A+ scoring criteria weights based on what actually works in live trading.
 
-**Key Feature:** The agent learns from its mistakes and successes, continuously optimizing its decision-making without manual intervention.
+**Key Feature:** The agent learns from its mistakes and successes, continuously optimizing its decision-making without manual intervention. Reviews run weekly (Saturdays) to allow sufficient time for weights to prove themselves.
 
 ---
 
 ## How It Works
 
-### 1. Daily Review Process
+### 1. Weekly Review Process
 
-After market close (4:30 PM ET), the system:
+Every Saturday at 4:30 PM ET, the system:
 
 1. **Collects Trade Data**
    - Reads all trades from the past 30 days
@@ -32,10 +32,10 @@ After market close (4:30 PM ET), the system:
 
 4. **Saves Results**
    - Persists learned weights to `learned_weights.json`
-   - Generates daily review report in `journal/reviews/`
+   - Generates weekly review report in `journal/reviews/`
    - Logs weight changes and performance metrics
 
-5. **Next Day**
+5. **Next Week**
    - Agent loads learned weights on startup
    - Uses adjusted scoring for all future trades
    - Continues learning from new trades
@@ -44,7 +44,7 @@ After market close (4:30 PM ET), the system:
 
 ## Example Learning Cycle
 
-### Day 1 - Default Weights
+### Week 1 - Default Weights
 ```python
 SCORE_CRITERIA = {
     "liquidity_sweep": 20,
@@ -64,7 +64,7 @@ SCORE_CRITERIA = {
 - Trade 2: liquidity_sweep=✓, fvg_present=✓ → **LOSS** (-$25)
 - Trade 3: premium_discount=✓, ema_confirmation=✓ → **WIN** (+$30)
 
-### Day 1 Review - Analysis
+### Week 1 Review - Analysis
 ```
 Criterion Analysis:
   premium_discount: present in 2 wins, 0 losses → win rate 100% (+correlation)
@@ -73,7 +73,7 @@ Criterion Analysis:
   fvg_present: present in 0 wins, 1 loss → win rate 0% (-correlation)
 ```
 
-### Day 2 - Adjusted Weights
+### Week 2 - Adjusted Weights
 ```python
 LEARNED_WEIGHTS = {
     "liquidity_sweep": 18,        # -2 (negatively correlated)
@@ -194,7 +194,7 @@ Use `view_learning_history.py` to analyze this data (see below).
 
 ### Automatic (Recommended)
 
-Review runs automatically at 4:30 PM ET daily:
+Review runs automatically every Saturday at 4:30 PM ET:
 
 ```bash
 # Load the LaunchAgent (one time)
@@ -431,7 +431,7 @@ tail -f logs/review_stderr.log
 **Common issues:**
 - Not enough completed trades (need ≥3)
 - No closed positions yet (all still open)
-- Market not closed (review runs after 4:30 PM ET)
+- Review runs Saturdays at 4:30 PM ET (market closed on weekends)
 
 ### Weights Seem Wrong
 
@@ -509,7 +509,7 @@ Using default scoring weights
 
 ## Performance Metrics
 
-After 30 days of learning, typical results:
+After 8-12 weeks of learning, typical results:
 - 10-20% improvement in win rate
 - 15-30% improvement in profit factor
 - More consistent performance
@@ -521,13 +521,19 @@ The system learns YOUR optimal weights based on:
 - Your trading hours
 - Actual execution fills
 
+**Why weekly reviews?**
+- Gives weights time to prove themselves over multiple trading days
+- Prevents overreaction to daily variance
+- More statistically significant with larger sample sizes
+- Smoother learning curve with less noise
+
 ---
 
 ## Next Steps
 
-1. **Let it learn:** Agent needs 2-4 weeks to gather meaningful data
-2. **Review weekly:** Check `journal/reviews/` to see what's being learned
-3. **Monitor performance:** Track win rate trends over time
+1. **Let it learn:** Agent needs 8-12 weeks to gather meaningful data
+2. **Review progress:** Check `journal/reviews/` on Saturdays to see what's being learned
+3. **Monitor performance:** Track win rate trends over multiple weeks
 4. **Adjust if needed:** Tune learning parameters based on results
 
 The longer the agent runs, the better it gets at finding A+ setups that actually work for you! 🎓📈

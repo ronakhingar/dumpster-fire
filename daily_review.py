@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-Daily Review & Learning System
+Weekly Review & Learning System
 
-Analyzes completed trades, calculates performance metrics, and adjusts
-A+ scoring criteria weights based on what's actually working.
+Analyzes completed trades from the past week, calculates performance metrics,
+and adjusts A+ scoring criteria weights based on what's actually working.
 
 Process:
-  1. Wait for market close
-  2. Analyze all trades from today
-  3. Correlate criteria with win/loss outcomes
-  4. Adjust weights using exponential moving average
-  5. Save learned weights for tomorrow
-  6. Generate performance report
+  1. Analyze all trades from last 30 days
+  2. Correlate criteria with win/loss outcomes
+  3. Adjust weights using exponential moving average
+  4. Save learned weights for next week
+  5. Generate performance report
 
-Run automatically via cron or manually:
+Run automatically every Saturday or manually:
   python3 daily_review.py
 """
 
@@ -40,7 +39,7 @@ LEARNING_RATE = 0.15  # How fast to adjust weights (0.1-0.3 recommended)
 MIN_TRADES_TO_LEARN = 3  # Minimum trades before adjusting weights
 MIN_WEIGHT = 2  # Minimum weight value
 MAX_WEIGHT = 30  # Maximum weight value
-CONFIDENCE_THRESHOLD = 0.6  # Minimum win rate to increase weight
+CONFIDENCE_THRESHOLD = 0.6  # Minimum win rate to increase weight (60%)
 
 
 # ─── Load Learned Weights ─────────────────────────────────────────────────────
@@ -556,9 +555,9 @@ def save_review_report(report: str):
 # ─── Main Review Process ──────────────────────────────────────────────────────
 
 def run_daily_review():
-    """Execute the full daily review and learning process."""
+    """Execute the full weekly review and learning process."""
     print(f"\n{'='*72}")
-    print(f"  DAILY REVIEW & LEARNING")
+    print(f"  WEEKLY REVIEW & LEARNING")
     print(f"  {datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S ET')}")
     print(f"{'='*72}\n")
 
@@ -636,7 +635,7 @@ def run_daily_review():
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Daily review and learning system")
+    parser = argparse.ArgumentParser(description="Weekly review and learning system")
     parser.add_argument("--reset", action="store_true",
                        help="Reset weights to defaults")
     args = parser.parse_args()
