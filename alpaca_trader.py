@@ -158,9 +158,10 @@ def get_historical_bars(symbol, timeframe="1Day", start=None, end=None):
 
 # ─── Orders ──────────────────────────────────────────────────────────────────
 
-def buy(symbol, qty, order_type="market", limit_price=None, time_in_force="day"):
+def buy(symbol, qty, order_type="market", limit_price=None, time_in_force="day",
+        stop_loss=None, take_profit=None):
     """
-    Place a buy order.
+    Place a buy order with optional bracket (stop loss + take profit).
 
     Args:
         symbol:        QQQ or SPY
@@ -168,13 +169,17 @@ def buy(symbol, qty, order_type="market", limit_price=None, time_in_force="day")
         order_type:    "market" or "limit"
         limit_price:   required if order_type="limit"
         time_in_force: "day" or "gtc"
+        stop_loss:     stop loss price (broker-side protection)
+        take_profit:   take profit price (broker-side exit)
     """
-    return _place_order(symbol, qty, "buy", order_type, limit_price, time_in_force)
+    return _place_order(symbol, qty, "buy", order_type, limit_price, time_in_force,
+                        stop_loss, take_profit)
 
 
-def sell(symbol, qty, order_type="market", limit_price=None, time_in_force="day"):
+def sell(symbol, qty, order_type="market", limit_price=None, time_in_force="day",
+         stop_loss=None, take_profit=None):
     """
-    Place a sell order.
+    Place a sell order with optional bracket (stop loss + take profit).
 
     Args:
         symbol:        QQQ or SPY
@@ -182,11 +187,15 @@ def sell(symbol, qty, order_type="market", limit_price=None, time_in_force="day"
         order_type:    "market" or "limit"
         limit_price:   required if order_type="limit"
         time_in_force: "day" or "gtc"
+        stop_loss:     stop loss price (broker-side protection)
+        take_profit:   take profit price (broker-side exit)
     """
-    return _place_order(symbol, qty, "sell", order_type, limit_price, time_in_force)
+    return _place_order(symbol, qty, "sell", order_type, limit_price, time_in_force,
+                        stop_loss, take_profit)
 
 
-def _place_order(symbol, qty, side, order_type, limit_price, time_in_force):
+def _place_order(symbol, qty, side, order_type, limit_price, time_in_force,
+                 stop_loss=None, take_profit=None):
     sym = _validate_symbol(symbol)
     if order_type == "limit" and limit_price is None:
         raise ValueError("limit_price is required for limit orders")
@@ -201,6 +210,14 @@ def _place_order(symbol, qty, side, order_type, limit_price, time_in_force):
     if limit_price is not None:
         kwargs["limit_price"] = str(limit_price)
 
+    # Add bracket order support (broker-side stop loss + take profit)
+    if stop_loss is not None or take_profit is not None:
+        kwargs["order_class"] = "bracket"
+        if stop_loss is not None:
+            kwargs["stop_loss"] = {"stop_price": str(stop_loss)}
+        if take_profit is not None:
+            kwargs["take_profit"] = {"limit_price": str(take_profit)}
+
     order = api.submit_order(**kwargs)
     result = {
         "id": order.id,
@@ -211,10 +228,16 @@ def _place_order(symbol, qty, side, order_type, limit_price, time_in_force):
         "limit_price": order.limit_price,
         "time_in_force": order.time_in_force,
         "status": order.status,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "has_bracket": stop_loss is not None or take_profit is not None,
     }
     lp = f" @ {_fmt(limit_price)}" if limit_price else ""
+    bracket_info = ""
+    if stop_loss or take_profit:
+        bracket_info = f"  [BRACKET: stop={_fmt(stop_loss) if stop_loss else '—'} target={_fmt(take_profit) if take_profit else '—'}]"
     print(f"\n  ✓ {side.upper()} {qty} {sym} {order_type}{lp}  "
-          f"tif={time_in_force}  status={order.status}  id={order.id}")
+          f"tif={time_in_force}  status={order.status}  id={order.id}{bracket_info}")
     log_trade(result, action=side)
     return result
 

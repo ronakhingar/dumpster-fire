@@ -642,10 +642,23 @@ def compute_position_size(equity: float, price: float, atr: float | None) -> int
 # ─── Position management ─────────────────────────────────────────────────────
 
 def manage_positions(dry_run: bool = False):
-    """Check open positions using live price and close any that hit stop or target."""
+    """
+    Check open positions and close any that hit stop or target.
+
+    NOTE: As of bracket order implementation, new trades have broker-side stops
+    that execute automatically. This function acts as a backup for:
+      - Manually opened positions (not from agent)
+      - Legacy positions from before bracket orders
+      - Emergency exit if bracket orders fail
+    """
     positions = get_positions()
     if not positions:
         return
+
+    # Check for existing bracket orders (stop loss / take profit)
+    from alpaca_trader import get_open_orders
+    open_orders = get_open_orders()
+    symbols_with_brackets = {o["symbol"] for o in open_orders if o["type"] in ("stop", "limit")}
 
     for pos in positions:
         sym = pos["symbol"]
@@ -694,22 +707,36 @@ def manage_positions(dry_run: bool = False):
         hit_stop = (is_long and current <= stop_price) or (not is_long and current >= stop_price)
         hit_target = (is_long and current >= target_price) or (not is_long and current <= target_price)
 
+        # Check if broker-side bracket orders exist
+        has_bracket = sym in symbols_with_brackets
+
         if hit_stop:
-            print(f"\n  🛑 STOP HIT on {sym}: live={current:.2f} stop={stop_price:.2f}")
-            if not dry_run:
-                result = close_position(sym)
-                if result:
-                    _record_trade(result.get("pnl", 0.0))
+            if has_bracket:
+                print(f"\n  🛑 STOP HIT on {sym}: live={current:.2f} stop={stop_price:.2f} "
+                      f"[broker-side stop order will handle exit]")
+            else:
+                print(f"\n  🛑 STOP HIT on {sym}: live={current:.2f} stop={stop_price:.2f} "
+                      f"[no bracket - manually closing]")
+                if not dry_run:
+                    result = close_position(sym)
+                    if result:
+                        _record_trade(result.get("pnl", 0.0))
         elif hit_target:
-            print(f"\n  🎯 TARGET HIT on {sym}: live={current:.2f} target={target_price:.2f}")
-            if not dry_run:
-                result = close_position(sym)
-                if result:
-                    _record_trade(result.get("pnl", 0.0))
+            if has_bracket:
+                print(f"\n  🎯 TARGET HIT on {sym}: live={current:.2f} target={target_price:.2f} "
+                      f"[broker-side take-profit order will handle exit]")
+            else:
+                print(f"\n  🎯 TARGET HIT on {sym}: live={current:.2f} target={target_price:.2f} "
+                      f"[no bracket - manually closing]")
+                if not dry_run:
+                    result = close_position(sym)
+                    if result:
+                        _record_trade(result.get("pnl", 0.0))
         else:
             direction = "LONG" if is_long else "SHORT"
+            bracket_status = "[BROKER-SIDE STOPS ACTIVE]" if has_bracket else "[manual stops]"
             print(f"  📊 {sym} {direction}: entry={entry:.2f} live={current:.2f} "
-                  f"stop={stop_price:.2f} target={target_price:.2f} P&L={pnl_pct:+.2%}")
+                  f"stop={stop_price:.2f} target={target_price:.2f} P&L={pnl_pct:+.2%} {bracket_status}")
 
 
 # ─── Decision logging ─────────────────────────────────────────────────────────
@@ -1009,19 +1036,23 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                 htf_info=htf_info)
             continue
 
-        # ── Step 7: Execute ───────────────────────────────────────────
+        # ── Step 7: Execute with broker-side bracket orders ──────────
         try:
             if side == "buy":
                 order = buy(sym, qty=qty, order_type="limit",
-                            limit_price=exec_price)
+                            limit_price=exec_price,
+                            stop_loss=trade["stop_loss"],
+                            take_profit=trade["take_profit"])
             else:
                 order = sell(sym, qty=qty, order_type="limit",
-                             limit_price=exec_price)
+                             limit_price=exec_price,
+                             stop_loss=trade["stop_loss"],
+                             take_profit=trade["take_profit"])
 
             _record_trade()
             stats.trades_executed += 1
             stats.tick_api()
-            print(f"  ✓ Order placed: {order['id']}")
+            print(f"  ✓ Order placed: {order['id']} [BRACKET ORDER - broker-side stops active]")
             _log_sym_decision(sym, "order_placed",
                 f"{side.upper()} {qty} @ ${exec_price:,.2f} — order {order['id']}",
                 detected_setup=intraday.get("detected_setup", "none"),

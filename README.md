@@ -1,6 +1,6 @@
 # dumpster-fire 🔥
 
-Autonomous trading agent for SPY/QQQ on Alpaca paper trading. Burns through tokens and cash like never before.
+Autonomous trading agent for SPY/QQQ on Alpaca paper trading with broker-side stop protection.
 
 ## Architecture
 
@@ -8,7 +8,7 @@ Autonomous trading agent for SPY/QQQ on Alpaca paper trading. Burns through toke
 agent.py              ← Main autonomous agent (scan → score → trade loop)
 ├── analyze.py        ← Full analysis: indicators + setup detection + trade levels
 │   ├── indicator_engine.py  ← Deterministic EMA, RSI, MACD, ATR, VWAP
-│   └── alpaca_trader.py     ← Alpaca API wrapper (data + execution)
+│   └── alpaca_trader.py     ← Alpaca API wrapper (data + execution + bracket orders)
 ├── memories.py       ← Trading knowledge base (A+ criteria, guardrails, killzones)
 └── journal.py        ← Persists every analysis and trade to disk as JSON
 ```
@@ -17,10 +17,11 @@ agent.py              ← Main autonomous agent (scan → score → trade loop)
 
 Distilled from TTT Mastermind 9 & 10 sessions, A+ Trade Rating Guide, Liquidity playbooks, and ICT concepts:
 
-- **A+ Scoring** — 9 criteria totaling 100 points. Only setups scoring ≥80 qualify.
+- **A+ Scoring** — 9 criteria totaling 100 points + up to 45 HTF bonus. Only setups scoring ≥80 qualify.
 - **Killzones** — Asia, London, NY AM, NY Lunch, NY PM (ET times)
 - **Macro Windows** — 20-min high-probability algo bursts
 - **Guardrails** — max 2 trades/day, 5% position size, 2:1 min R:R, 2% daily loss limit, 30-min cooldown after loss
+- **Broker-Side Stops** — All trades use Alpaca bracket orders with automatic stop-loss and take-profit execution
 
 ## Setup
 
@@ -29,7 +30,27 @@ pip install -r requirements.txt
 cp .env.example .env  # Add your Alpaca paper trading keys
 ```
 
-## Usage
+## Automated Service (Recommended)
+
+The agent runs as a macOS LaunchAgent service - auto-starts on boot, scans every 2 min during killzones:
+
+```bash
+# Start the service (auto-starts on boot)
+./agent_control.sh start
+
+# Check status
+./agent_control.sh status
+
+# View live logs
+./agent_control.sh logs
+
+# Stop service
+./agent_control.sh stop
+```
+
+See [AGENT_SERVICE.md](AGENT_SERVICE.md) for full documentation.
+
+## Manual Usage
 
 ```bash
 # Single scan-and-act cycle
@@ -38,11 +59,8 @@ python3 agent.py
 # Dry run — analyze only, no trades
 python3 agent.py --dry-run
 
-# Continuous loop during market hours (15-min interval)
-python3 agent.py --loop
-
-# Loop with custom interval
-python3 agent.py --loop --interval 5
+# Continuous loop during killzones (2-min interval)
+python3 agent.py --loop --interval 2
 
 # Standalone analysis
 python3 analyze.py SPY 1Day
