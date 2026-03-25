@@ -306,41 +306,138 @@ def transcribe_all(model_name=None):
 
 # ─── Stage 3: Extract frames ─────────────────────────────────────────────────
 
+CHART_CUE_PHRASES = re.compile(
+    r"look at|as you can see|here'?s the|this chart|this setup|on the (\d+ ?min|"
+    r"daily|weekly|monthly|hour)|order block|fair value gap|FVG|liquidity|"
+    r"displacement|market structure|break of structure|change of character|"
+    r"let me show|pay attention|notice how|right here|this level|"
+    r"this candle|entry model|stop loss|target",
+    re.IGNORECASE,
+)
+
+
+def _get_transcript_cue_timestamps(conn, source_id):
+    """Find timestamps where the speaker references a chart or setup."""
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""
+            SELECT start_sec, end_sec, text FROM transcripts
+            WHERE source_id = %s ORDER BY segment_idx
+        """, (source_id,))
+        segments = cur.fetchall()
+
+    cue_times = []
+    for seg in segments:
+        if CHART_CUE_PHRASES.search(seg["text"]):
+            midpoint = (seg["start_sec"] + seg["end_sec"]) / 2
+            cue_times.append(midpoint)
+
+    return cue_times
+
+
+def _extract_scene_changes(mp4_path, out_dir):
+    """Use FFmpeg scene detection to find visual transitions."""
+    scene_list = out_dir / "scenes.txt"
+    cmd = [
+        "ffmpeg", "-i", mp4_path,
+        "-vf", "select='gt(scene,0.3)',showinfo",
+        "-vsync", "vfr",
+        "-f", "null", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    timestamps = []
+    for line in result.stderr.split("\n"):
+        match = re.search(r"pts_time:(\d+\.?\d*)", line)
+        if match:
+            timestamps.append(float(match.group(1)))
+    return timestamps
+
+
+def _extract_frame_at(mp4_path, timestamp_sec, out_path):
+    """Extract a single frame at an exact timestamp."""
+    cmd = [
+        "ffmpeg", "-ss", str(timestamp_sec),
+        "-i", mp4_path,
+        "-frames:v", "1",
+        "-q:v", "3",
+        "-y", str(out_path),
+    ]
+    subprocess.run(cmd, capture_output=True, text=True)
+    return Path(out_path).exists()
+
+
+def _deduplicate_timestamps(timestamps, min_gap=3.0):
+    """Remove timestamps within min_gap seconds of each other."""
+    if not timestamps:
+        return []
+    timestamps = sorted(set(timestamps))
+    deduped = [timestamps[0]]
+    for ts in timestamps[1:]:
+        if ts - deduped[-1] >= min_gap:
+            deduped.append(ts)
+    return deduped
+
+
 def extract_frames_for_source(conn, source_id, mp4_path):
-    """Extract 1 frame per 30 seconds from a video using FFmpeg."""
+    """
+    Smart frame extraction using three strategies combined:
+      1. Scene change detection — catches visual transitions (chart switches)
+      2. Transcript cues — frames when speaker says "look at this chart" etc.
+      3. Baseline every 30s — ensures no long gaps without coverage
+    All timestamps are deduplicated within a 3-second window.
+    """
     out_dir = FRAMES_DIR / str(source_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        "ffmpeg", "-i", mp4_path,
-        "-vf", "fps=1/30",
-        "-q:v", "5",
-        "-y",
-        str(out_dir / "frame_%04d.jpg"),
-    ]
-
     print(f"    Extracting frames from {Path(mp4_path).name}...")
     t0 = time.time()
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    elapsed = time.time() - t0
 
-    if result.returncode != 0:
-        raise RuntimeError(f"FFmpeg failed: {result.stderr[-500:]}")
+    # Strategy 1: Scene changes
+    print(f"      Detecting scene changes...")
+    scene_ts = _extract_scene_changes(mp4_path, out_dir)
+    print(f"      Found {len(scene_ts)} scene changes")
 
-    frames = sorted(out_dir.glob("frame_*.jpg"))
-    print(f"    Extracted {len(frames)} frames in {elapsed:.0f}s")
+    # Strategy 2: Transcript cues
+    cue_ts = _get_transcript_cue_timestamps(conn, source_id)
+    print(f"      Found {len(cue_ts)} transcript cue points")
 
-    with conn.cursor() as cur:
-        for i, fp in enumerate(frames):
-            timestamp_sec = i * 30.0
-            rel_path = str(fp.relative_to(Path(__file__).parent))
-            cur.execute("""
-                INSERT INTO frames (source_id, timestamp_sec, file_path)
-                VALUES (%s, %s, %s)
-            """, (source_id, timestamp_sec, rel_path))
+    # Strategy 3: Baseline every 30s (get video duration first)
+    dur_cmd = [
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", mp4_path,
+    ]
+    dur_result = subprocess.run(dur_cmd, capture_output=True, text=True)
+    duration = float(dur_result.stdout.strip()) if dur_result.stdout.strip() else 0
+    baseline_ts = [i * 30.0 for i in range(int(duration / 30) + 1)]
+
+    # Merge and deduplicate
+    all_ts = _deduplicate_timestamps(scene_ts + cue_ts + baseline_ts, min_gap=3.0)
+    print(f"      Total unique timestamps after dedup: {len(all_ts)}")
+
+    # Extract each frame
+    extracted = 0
+    for ts in all_ts:
+        frame_name = f"frame_{ts:08.1f}s.jpg"
+        out_path = out_dir / frame_name
+        if _extract_frame_at(mp4_path, ts, out_path):
+            is_cue = any(abs(ts - c) < 3 for c in cue_ts)
+            is_scene = any(abs(ts - s) < 3 for s in scene_ts)
+            rel_path = str(out_path.relative_to(Path(__file__).parent))
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO frames (source_id, timestamp_sec, file_path,
+                                        is_chart, description)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (source_id, ts, rel_path,
+                      is_cue or is_scene,
+                      "scene_change" if is_scene else ("transcript_cue" if is_cue else "baseline")))
+            extracted += 1
     conn.commit()
 
-    return len(frames)
+    elapsed = time.time() - t0
+    print(f"    Extracted {extracted} frames in {elapsed:.0f}s "
+          f"(scene:{len(scene_ts)} cue:{len(cue_ts)} baseline:{len(baseline_ts)})")
+
+    return extracted
 
 
 def extract_frames_all():
