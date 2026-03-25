@@ -5,21 +5,21 @@ Video/audio processing pipeline.
 Stages (each is resumable via pipeline_state table):
   1. discover   — scan tt/ and register sources in media_sources
   2. transcribe — Whisper on .m4a (or parse .cc.vtt where available)
-  3. frames     — FFmpeg: 1 frame per 30 seconds from .mp4
+  3. frames     — FFmpeg: scene detection + transcript cues + baseline
   4. chats      — parse Zoom newChat.txt into session_chats
+  5. analyze    — Gemini extracts trades + insights from transcripts
 
 Usage:
   python3 pipeline.py                  # run full pipeline
-  python3 pipeline.py discover         # run single stage
-  python3 pipeline.py transcribe       # run single stage
-  python3 pipeline.py frames           # run single stage
-  python3 pipeline.py chats            # run single stage
+  python3 pipeline.py discover         # run from specific stage
+  python3 pipeline.py analyze          # run analysis + remaining
   python3 pipeline.py --model medium   # use larger Whisper model
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -588,6 +588,245 @@ def parse_chats():
     conn.close()
 
 
+# ─── Stage 5: Gemini transcript analysis ──────────────────────────────────────
+
+GEMINI_BATCH_SIZE = 200  # segments per request (fits in 1M context)
+
+def _build_analysis_prompt(session_label, start_time, end_time, transcript_text):
+    return (
+        "You are analyzing a trading education session transcript.\n\n"
+        "Extract TWO types of information:\n\n"
+        "1. TRADES — Any specific trade setups discussed, demonstrated, or reviewed:\n"
+        '   Return as JSON array "trades" with fields:\n'
+        '   - symbol (string or null): ticker if mentioned (e.g. "NQ", "ES", "SPY")\n'
+        '   - direction ("long" / "short" / null)\n'
+        '   - setup_type (string): the model/pattern name (e.g. "2022_model", "IFVG", '
+        '"unicorn", "liquidity_sweep", "FVG_entry", "order_block", "SMT_divergence", '
+        '"power_of_three")\n'
+        "   - entry_criteria (object): what conditions must be met\n"
+        "   - exit_criteria (object or null): stop loss / target logic\n"
+        '   - result ("win" / "loss" / "breakeven" / null): if outcome was discussed\n'
+        "   - notes (string): brief context of what was taught about this trade\n\n"
+        "2. INSIGHTS — Trading rules, principles, or guidelines stated by the instructor:\n"
+        '   Return as JSON array "insights" with fields:\n'
+        '   - category: one of "setup_rule", "risk_management", "psychology", '
+        '"market_structure", "entry_timing", "exit_strategy", "confluence"\n'
+        "   - description (string): the rule/principle in clear language\n"
+        "   - evidence (string): direct quote or paraphrase from the transcript\n"
+        "   - confidence (float 0-1): how explicitly this was stated vs inferred\n"
+        "   - tags (array of strings): relevant keywords\n\n"
+        'Return ONLY valid JSON with keys "trades" and "insights". '
+        'If nothing relevant, return empty arrays.\n\n'
+        f"Transcript (session: {session_label}, timestamps {start_time} - {end_time}):\n\n"
+        f"{transcript_text}\n"
+    )
+
+
+def _init_gemini():
+    """Initialize Gemini client using the google.genai SDK."""
+    from google import genai
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not set in .env")
+    return genai.Client(api_key=api_key)
+
+
+def _call_gemini_with_retry(client, prompt, max_retries=5):
+    """Call Gemini API with retry on rate limit / transient errors."""
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash-lite",
+                contents=prompt,
+            )
+            text = response.text.strip()
+            if text.startswith("```"):
+                text = re.sub(r"^```(?:json)?\n?", "", text)
+                text = re.sub(r"\n?```$", "", text)
+            return json.loads(text)
+        except json.JSONDecodeError:
+            print(f"      ⚠ Invalid JSON on attempt {attempt+1}, retrying...")
+            time.sleep(3)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "429" in err_str or "resource" in err_str or "quota" in err_str or "503" in err_str or "unavailable" in err_str:
+                # Extract retryDelay from error if present
+                retry_match = re.search(r"retryDelay.*?(\d+)s", str(e))
+                base_wait = int(retry_match.group(1)) + 2 if retry_match else 15
+                wait = base_wait * (attempt + 1)
+                print(f"      ⚠ Rate limited (attempt {attempt+1}), waiting {wait}s...")
+                time.sleep(wait)
+            else:
+                print(f"      ⚠ Gemini error: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(5)
+                else:
+                    raise
+    return {"trades": [], "insights": []}
+
+
+def _store_gemini_results(conn, source_id, segment_start_id, results):
+    """Store extracted trades and insights in Postgres."""
+    trades_stored = 0
+    insights_stored = 0
+
+    with conn.cursor() as cur:
+        for trade in results.get("trades", []):
+            cur.execute("""
+                INSERT INTO video_trades
+                    (source_id, symbol, direction, setup_type,
+                     entry_criteria, exit_criteria, result, notes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                source_id,
+                trade.get("symbol"),
+                trade.get("direction"),
+                trade.get("setup_type"),
+                json.dumps(trade.get("entry_criteria")) if trade.get("entry_criteria") else None,
+                json.dumps(trade.get("exit_criteria")) if trade.get("exit_criteria") else None,
+                trade.get("result"),
+                trade.get("notes"),
+            ))
+            trades_stored += 1
+
+        for insight in results.get("insights", []):
+            tags = insight.get("tags", [])
+            if not isinstance(tags, list):
+                tags = []
+            cur.execute("""
+                INSERT INTO video_insights
+                    (source_id, category, description, evidence,
+                     confidence, tags)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (
+                source_id,
+                insight.get("category", "setup_rule"),
+                insight.get("description", ""),
+                insight.get("evidence", ""),
+                insight.get("confidence", 0.5),
+                tags,
+            ))
+            insights_stored += 1
+
+    conn.commit()
+    return trades_stored, insights_stored
+
+
+def analyze_transcripts():
+    """Use Gemini to extract trades and insights from transcripts."""
+    print("\n══ STAGE 5: ANALYZE TRANSCRIPTS (Gemini) ══════════════════")
+    conn = get_conn()
+    client = _init_gemini()
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""
+            SELECT id, file_path, filename, category, program, session
+            FROM media_sources
+            WHERE status = 'processed' OR status = 'transcribed'
+            ORDER BY id
+        """)
+        sources = cur.fetchall()
+
+    if not sources:
+        print("  No sources ready for analysis.")
+        conn.close()
+        return
+
+    total_trades = 0
+    total_insights = 0
+    total_requests = 0
+
+    for src in sources:
+        sid = src["id"]
+        ref = src["file_path"]
+        label = f"{src['category']}/{src['program']}/{src['session']}"
+
+        state = get_pipeline_state(conn, "video", ref, "transcript_analysis")
+        if state and state["status"] == "completed":
+            print(f"  ⏭ Already analyzed: {label}")
+            continue
+
+        # Get all segments for this source
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, segment_idx, start_sec, end_sec, text
+                FROM transcripts WHERE source_id = %s
+                ORDER BY segment_idx
+            """, (sid,))
+            segments = cur.fetchall()
+
+        if not segments:
+            upsert_pipeline_state(conn, "video", ref, "transcript_analysis",
+                                  "completed", error="no_segments")
+            continue
+
+        existing_state = get_pipeline_state(conn, "video", ref, "transcript_analysis")
+        last_offset = existing_state["last_offset"] if existing_state else 0
+
+        upsert_pipeline_state(conn, "video", ref, "transcript_analysis", "in_progress")
+
+        print(f"\n  📊 Analyzing: {label} ({len(segments)} segments, "
+              f"resuming from offset {last_offset})")
+
+        src_trades = 0
+        src_insights = 0
+
+        # Process in batches
+        for batch_start in range(last_offset, len(segments), GEMINI_BATCH_SIZE):
+            batch = segments[batch_start:batch_start + GEMINI_BATCH_SIZE]
+            if not batch:
+                break
+
+            transcript_text = "\n".join(
+                f"[{s['start_sec']:.0f}s - {s['end_sec']:.0f}s] {s['text']}"
+                for s in batch
+            )
+
+            start_time = f"{batch[0]['start_sec']:.0f}s"
+            end_time = f"{batch[-1]['end_sec']:.0f}s"
+
+            prompt = _build_analysis_prompt(label, start_time, end_time,
+                                               transcript_text)
+
+            print(f"    Batch {batch_start//GEMINI_BATCH_SIZE + 1}: "
+                  f"segments {batch_start}-{batch_start+len(batch)-1} "
+                  f"({start_time} - {end_time})")
+
+            try:
+                results = _call_gemini_with_retry(client, prompt)
+                t, i = _store_gemini_results(conn, sid, batch[0]["id"], results)
+                src_trades += t
+                src_insights += i
+                total_requests += 1
+
+                upsert_pipeline_state(conn, "video", ref, "transcript_analysis",
+                                      "in_progress",
+                                      last_offset=batch_start + len(batch))
+
+                print(f"      → {t} trades, {i} insights")
+
+                # Free tier: ~10 RPM + token quota; 6s between requests keeps us safe
+                time.sleep(6)
+
+            except Exception as e:
+                print(f"      ✗ Batch failed: {e}")
+                upsert_pipeline_state(conn, "video", ref, "transcript_analysis",
+                                      "in_progress",
+                                      last_offset=batch_start,
+                                      error=str(e))
+                break
+
+        upsert_pipeline_state(conn, "video", ref, "transcript_analysis",
+                              "completed", last_offset=len(segments))
+        total_trades += src_trades
+        total_insights += src_insights
+        print(f"  ✓ {label}: {src_trades} trades, {src_insights} insights")
+
+    print(f"\n  Total: {total_trades} trades, {total_insights} insights "
+          f"({total_requests} API requests)")
+    conn.close()
+
+
 # ─── Pipeline status ──────────────────────────────────────────────────────────
 
 def show_status():
@@ -601,7 +840,9 @@ def show_status():
                    ms.status AS source_status,
                    (SELECT COUNT(*) FROM transcripts t WHERE t.source_id = ms.id) AS segments,
                    (SELECT COUNT(*) FROM frames f WHERE f.source_id = ms.id) AS frames,
-                   (SELECT COUNT(*) FROM session_chats sc WHERE sc.source_id = ms.id) AS chats
+                   (SELECT COUNT(*) FROM session_chats sc WHERE sc.source_id = ms.id) AS chats,
+                   (SELECT COUNT(*) FROM video_trades vt WHERE vt.source_id = ms.id) AS trades,
+                   (SELECT COUNT(*) FROM video_insights vi WHERE vi.source_id = ms.id) AS insights
             FROM media_sources ms
             ORDER BY ms.id
         """)
@@ -612,12 +853,12 @@ def show_status():
         conn.close()
         return
 
-    print(f"\n  {'ID':>3}  {'Status':<13} {'Segs':>5} {'Frames':>6} {'Chats':>5}  Source")
-    print(f"  {'─'*80}")
+    print(f"\n  {'ID':>3}  {'Status':<13} {'Segs':>5} {'Frames':>6} {'Chats':>5} {'Trades':>6} {'Rules':>5}  Source")
+    print(f"  {'─'*90}")
     for s in sources:
         label = f"{s['category']}/{s['program']}/{s['session']}"
         print(f"  {s['id']:>3}  {s['source_status']:<13} {s['segments']:>5} "
-              f"{s['frames']:>6} {s['chats']:>5}  {label}")
+              f"{s['frames']:>6} {s['chats']:>5} {s['trades']:>6} {s['insights']:>5}  {label}")
 
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("""
@@ -641,7 +882,7 @@ def main():
     parser = argparse.ArgumentParser(description="Video/audio processing pipeline")
     parser.add_argument("stage", nargs="?", default="all",
                         choices=["all", "discover", "transcribe", "frames",
-                                 "chats", "status"],
+                                 "chats", "analyze", "status"],
                         help="Pipeline stage to run (default: all)")
     parser.add_argument("--model", default=WHISPER_MODEL,
                         choices=["tiny", "base", "small", "medium", "large"],
@@ -663,6 +904,7 @@ def main():
         ("transcribe", lambda: transcribe_all(model_name=args.model)),
         ("frames", extract_frames_all),
         ("chats", parse_chats),
+        ("analyze", analyze_transcripts),
     ]
     stage_names = [s[0] for s in stages]
 

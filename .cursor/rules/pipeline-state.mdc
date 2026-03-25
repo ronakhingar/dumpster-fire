@@ -18,14 +18,23 @@ alwaysApply: true
 - `db/init.sql` — full schema with 9 tables, 2 materialized views, indexes
 - `docs/pipeline_architecture.md` — decision record for the data pipeline
 
-## Current pipeline status
+## Current pipeline status (updated 2026-03-25)
 - Postgres trading-db: RUNNING (port 25433, container: trading-db)
 - 12 media sources registered in media_sources table
+- 8,703 transcript segments (all 12 sources complete)
+- 2,918 frames extracted (1,909 tagged as charts) from 11 videos
 - 318 chat messages parsed into session_chats
-- Transcription: IN PROGRESS (Whisper small model on .m4a files)
-  - Sources with .cc.vtt (IDs 1, 12) parse instantly
-  - Remaining 10 sources need Whisper
-- Frame extraction: PENDING (runs after transcription)
+- **Stage 5 (Gemini transcript analysis): 7/12 sources COMPLETE**
+  - 38 trades, 340 insights extracted so far
+  - 15 API requests remaining (sources 8-12)
+  - Hit free tier daily quota — resets at midnight UTC (5 PM PDT)
+  - Resume with: `python3 pipeline.py analyze`
+  - Uses gemini-2.5-flash-lite (gemini-2.0-flash quota exhausted)
+
+## Free tier completion estimate
+- ~15 batches remaining, daily quota allows ~30 batches
+- **One more run after quota reset finishes everything**
+- Run anytime after 5 PM PDT today or tomorrow morning
 
 ## How to check pipeline status
 ```bash
@@ -36,18 +45,20 @@ python3 pipeline.py status
 Pipeline is fully resumable — it reads pipeline_state table from Postgres.
 Just run `python3 pipeline.py` or the specific stage and it picks up where it left off.
 
-## Pending work (NOT yet built)
-1. Discord batch pipeline — blocked on bot approval from server admin
-2. Discord live polling — integrate into agent.py 2-min loop
-3. Gemini-based transcript analysis — extract trades/insights (needs API key)
-4. Gemini-based frame analysis — chart screenshot extraction (needs API key)
-5. Compile insights into memories.py — after Gemini analysis
+## Pending work
+1. **Finish Stage 5** — 15 Gemini requests remain (run after quota reset)
+2. **Stage 6: Frame/chart analysis** — Gemini vision on extracted frames (to build)
+3. **Stage 7: Compile insights** — distill into memories.py + agent.py (to build)
+4. **Discord batch pipeline** — waiting for user to provide JSON export
+   - Bot request DENIED by admin — no real-time polling possible
+   - Using Discord Chat Exporter instead (user's own token, admin can't block)
+   - See `.cursor/rules/discord-integration.mdc` for full plan
 
 ## Credentials stored in .env
 - ALPACA_API_KEY / ALPACA_SECRET_KEY — paper trading
-- DISCORD_BOT_TOKEN / DISCORD_CHANNEL_ID / DISCORD_GUILD_ID — pending approval
+- DISCORD_BOT_TOKEN / DISCORD_CHANNEL_ID / DISCORD_GUILD_ID — bot denied, token unused
 - TRADING_DB_* / DATABASE_URL — Postgres on port 25433
-- GEMINI_API_KEY — NOT YET SET (user needs to generate from AI Studio)
+- GEMINI_API_KEY — set, using free tier (gemini-2.5-flash-lite)
 
 ## Key design decisions (see docs/pipeline_architecture.md)
 - $0 cost: local Whisper + Gemini free tier

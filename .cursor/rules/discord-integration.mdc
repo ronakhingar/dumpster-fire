@@ -5,39 +5,57 @@ alwaysApply: true
 
 # Discord Trading Channel Integration
 
-## Status: BLOCKED — waiting for server admin to approve bot membership
+## Status: BATCH ONLY — bot request denied, using Discord Chat Exporter instead
+
+### Access situation
+- Bot token request was **denied** by server admin — no bot will be added.
+- Real-time polling via bot is **off the table**.
+- **Discord Chat Exporter** (Tyrrrz) uses the user's own token — admins cannot block it.
+  It reads any channel the user already has access to. No server-side detection.
+- User has requested Discord Exporter plugin access (pending).
+- **Worst case**: no real-time data, but historical batch export is always available.
 
 ## Credentials
-- Bot token is stored in `.env` as `DISCORD_BOT_TOKEN`
+- Bot token in `.env` as `DISCORD_BOT_TOKEN` — **will not work** (bot not approved)
 - Channel ID: `545047039084593163` (stored as `DISCORD_CHANNEL_ID`)
 - Guild/Server ID: `400345242882146314` (stored as `DISCORD_GUILD_ID`)
-- Bot needs "Read Message History" + "View Channels" + "Message Content Intent"
 
-## Plan (execute once bot is approved)
+## Plan: Batch-only approach
 
-### 1. Postgres schema
-- `messages` — raw Discord messages
-- `trades` — parsed trade signals (symbol, direction, entry, stop, target, result, setup_type, reasoning)
+### 1. Data acquisition
+- User exports channel history via **DiscordChatExporter** as JSON
+- Place export file(s) in `discord_exports/` directory
+- Expected volume: ~54k messages, ~10 messages/day with charts
+
+### 2. Postgres schema (already created in db/init.sql)
+- `discord_messages` — raw messages with author, content, attachments, timestamps
+- `discord_trades` — parsed trade signals (symbol, direction, chart_path, chart_tf, etc.)
 - `pipeline_state` — batch processing progress (resumable)
-- `insights` — extracted patterns and trader stats
+- Materialized views: `trader_stats`, `setup_win_rates`
 
-### 2. Batch pipeline (`discord_analysis/pipeline.py`)
-- Load historical JSON export (from DiscordChatExporter) into Postgres
-- Process in chunks of 500 messages, commit after each chunk
+### 3. Batch pipeline (to build as `discord` stage in pipeline.py)
+- Parse JSON export into `discord_messages`
+- Process in chunks of 200 messages via Gemini
+- Extract trade calls, levels, bias, setup types, chart analysis
 - Resumable via `pipeline_state` table
-- Extract trades, setups, levels, and results from message content
+- Re-run periodically when user provides fresh exports
 
-### 3. Live polling (integrated into agent.py 2-min loop)
-- Every scan cycle: `GET /channels/{channel_id}/messages?after={last_msg_id}`
-- Parse new trade calls, levels, bias mentions
-- Store in Postgres
-- If a credible trader called a level that aligns with current setup → boost confluence score
-
-### 4. Discord confluence scoring (add to memories.py)
-- Bonus points when agent's setup aligns with Discord trade calls
-- Weight by trader's historical win rate from Postgres
+### 4. Agent integration (no real-time, historical only)
+- Agent queries materialized views at startup for:
+  - Trader win rates by setup type
+  - Most-used setups and their success rates
+  - Common levels/zones mentioned by high-win-rate traders
+- Confluence scoring: if agent's setup matches a historically successful
+  pattern from the channel → boost A+ score
+- Weight by trader's historical accuracy from `trader_stats` view
 - Cap the bonus like HTF liquidity bonus
 
-## User instruction
-User said: "admin has to first approve to add this bot as member. Till then wait."
-Do NOT attempt to use the Discord API until the user confirms the bot has been approved.
+### 5. What we lose without real-time
+- No "trader X is going long NQ right now" signals during killzones
+- No intraday bias confirmation from the channel
+- Mitigated by: periodic re-exports (weekly/monthly) to keep data fresh
+
+## User instructions
+- Do NOT attempt Discord bot API calls — bot is not approved and won't be.
+- Wait for user to provide JSON export file before building the discord pipeline stage.
+- If user later gets real-time access through another method, adapt accordingly.
