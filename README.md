@@ -55,11 +55,14 @@ See [AGENT_SERVICE.md](AGENT_SERVICE.md) for full documentation.
 
 Agent reviews weekly performance (Saturdays) and adjusts scoring weights **per killzone** (Asia, London, NY AM, NY Lunch, NY PM).
 
-Weekly review also analyzes macro market context:
+Weekly review also analyzes macro market context and alternative data:
 - **FOMC calendar** - detects upcoming Fed meetings
 - **Daily trend analysis** - SPY/QQQ relative to 50/100/200-day MAs
 - **VIX (fear gauge)** - volatility expectations
-- **Market regime classification** - applies scoring modifiers based on conditions
+- **Polymarket prediction markets** - Fed decisions, jobs data sentiment
+- **Commodities analysis** - Gold, oil, silver correlations with stocks
+- **Financial news scanning** - Major market-moving events from past week
+- **Market regime classification** - applies scoring modifiers based on combined signals
 
 ```bash
 # View learned weights

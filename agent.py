@@ -474,6 +474,8 @@ def score_setup(
 
     # Apply weekly market regime modifiers
     regime_adjustment = 0
+    alt_data_adjustment = 0
+
     if WEEKLY_CONTEXT and "regime" in WEEKLY_CONTEXT:
         regime_data = WEEKLY_CONTEXT["regime"]
         modifiers = regime_data.get("scoring_modifiers", {})
@@ -481,17 +483,25 @@ def score_setup(
         # Apply trend-following boost or reversal penalty
         if side == "buy":
             regime_adjustment = modifiers.get("trend_following_boost", 0)
+            alt_data_adjustment = modifiers.get("alt_data_long_bias", 0)
         elif side == "sell":
             # Reverse the boost for shorts in bearish regimes
             regime_adjustment = modifiers.get("trend_following_boost", 0)
+            alt_data_adjustment = modifiers.get("alt_data_short_bias", 0)
             # Apply reversal penalty if going against trend
             if regime_data.get("regime") == "strong_bullish_trend":
                 regime_adjustment = modifiers.get("reversal_penalty", 0)
 
-        htf_info["regime_adjustment"] = regime_adjustment
-        htf_info["regime"] = regime_data.get("regime", "unknown")
+        total_regime_adj = regime_adjustment + alt_data_adjustment
 
-    total = base_score + combined_htf + regime_adjustment
+        htf_info["regime_adjustment"] = regime_adjustment
+        htf_info["alt_data_adjustment"] = alt_data_adjustment
+        htf_info["total_regime_adjustment"] = total_regime_adj
+        htf_info["regime"] = regime_data.get("regime", "unknown")
+    else:
+        total_regime_adj = 0
+
+    total = base_score + combined_htf + total_regime_adj
     return total, checks, htf_info
 
 
@@ -1009,8 +1019,10 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         mb = htf_info.get("monthly_bonus", 0)
         htf_total = htf_info.get("combined_bonus", 0)
         regime_adj = htf_info.get("regime_adjustment", 0)
+        alt_adj = htf_info.get("alt_data_adjustment", 0)
+        total_regime_adj = htf_info.get("total_regime_adjustment", 0)
 
-        print(f"\n  A+ SCORE: {score}  (base: {base_score} + weekly: +{wb} + monthly: +{mb} = +{htf_total} HTF + regime: {regime_adj:+d})")
+        print(f"\n  A+ SCORE: {score}  (base: {base_score} + weekly: +{wb} + monthly: +{mb} = +{htf_total} HTF + regime: {total_regime_adj:+d})")
         print(f"  Threshold: {A_PLUS_THRESHOLD}  |  HTF cap: {HTF_BONUS_CAP}")
         if kz_label:
             print(f"  Using {kz_label} killzone weights")
@@ -1029,10 +1041,15 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
             print(f"    ✓ monthly_liquidity: +{mb}pts — {htf_info['reason_monthly']}")
         else:
             print(f"    ✗ monthly_liquidity: +0pts — {htf_info['reason_monthly']}")
-        if regime_adj != 0:
-            sign = "✓" if regime_adj > 0 else "✗"
-            regime_name = htf_info.get("regime", "unknown")
-            print(f"    {sign} regime_adjustment: {regime_adj:+d}pts — {regime_name}")
+        if regime_adj != 0 or alt_adj != 0:
+            if regime_adj != 0:
+                sign = "✓" if regime_adj > 0 else "✗"
+                regime_name = htf_info.get("regime", "unknown")
+                print(f"    {sign} regime_adjustment: {regime_adj:+d}pts — {regime_name}")
+            if alt_adj != 0:
+                sign = "✓" if alt_adj > 0 else "✗"
+                alt_bias = WEEKLY_CONTEXT.get("alternative_data", {}).get("directional_bias", {}).get("directional_bias", "unknown")
+                print(f"    {sign} alt_data_adjustment: {alt_adj:+d}pts — {alt_bias}")
 
         if score < A_PLUS_THRESHOLD:
             print(f"  ⏭ Score {score} < {A_PLUS_THRESHOLD} — not A+ quality, skipping")
@@ -1043,7 +1060,8 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                 daily_bias=daily_bias,
                 scores={"base": base_score, "weekly_bonus": wb,
                         "monthly_bonus": mb, "htf_total": htf_total,
-                        "regime_adjustment": regime_adj, "final": score},
+                        "regime_adjustment": regime_adj,
+                        "alt_data_adjustment": alt_adj, "final": score},
                 criteria=checks,
                 market_state=intraday.get("market_state"),
                 trade_levels=intraday.get("trade"),
@@ -1062,7 +1080,8 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                 recommendation=side, daily_bias=daily_bias,
                 scores={"base": base_score, "weekly_bonus": wb,
                         "monthly_bonus": mb, "htf_total": htf_total,
-                        "regime_adjustment": regime_adj, "final": score},
+                        "regime_adjustment": regime_adj,
+                        "alt_data_adjustment": alt_adj, "final": score},
                 criteria=checks,
                 market_state=intraday.get("market_state"),
                 trade_levels=trade, htf_info=htf_info)

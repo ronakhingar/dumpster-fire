@@ -213,7 +213,8 @@ def get_vix_level() -> dict:
         return {"error": f"Failed to fetch VIX: {e}"}
 
 
-def classify_market_regime(spy_analysis: dict, qqq_analysis: dict, vix_data: dict, fomc_data: dict) -> dict:
+def classify_market_regime(spy_analysis: dict, qqq_analysis: dict, vix_data: dict,
+                          fomc_data: dict, alternative_bias: dict | None = None) -> dict:
     """
     Combine all analyses into a single market regime classification.
 
@@ -286,11 +287,31 @@ def classify_market_regime(spy_analysis: dict, qqq_analysis: dict, vix_data: dic
 
     confidence = 0.8 if fomc_data["has_fomc"] else 0.7
 
+    # Blend in alternative data bias if available
+    if alternative_bias:
+        alt_adjustments = alternative_bias.get("weight_adjustments", {})
+        long_boost = alt_adjustments.get("long_boost", 0)
+        short_boost = alt_adjustments.get("short_boost", 0)
+
+        # Add alternative data signals to existing modifiers
+        if "trend_following_boost" not in modifiers or modifiers["trend_following_boost"] == 0:
+            # If no trend signal, use alternative data directly
+            modifiers["alt_data_long_bias"] = long_boost
+            modifiers["alt_data_short_bias"] = short_boost
+        else:
+            # If trend signal exists, blend (but don't override FOMC caution)
+            if not fomc_data["has_fomc"] or fomc_data["impact"] == "low":
+                modifiers["alt_data_long_bias"] = long_boost // 2
+                modifiers["alt_data_short_bias"] = short_boost // 2
+
+        description += f" | Alt data: {alternative_bias.get('directional_bias', 'neutral')}"
+
     return {
         "regime": regime,
         "confidence": confidence,
         "description": description,
-        "scoring_modifiers": modifiers
+        "scoring_modifiers": modifiers,
+        "alternative_data_integrated": alternative_bias is not None
     }
 
 
@@ -330,9 +351,20 @@ def generate_weekly_context() -> dict:
         print(f"     VIX: {vix_data['vix']} | {vix_data['classification']}")
         print(f"     {vix_data['note']}")
 
-    # Classify regime
+    # Alternative data analysis
+    print(f"\n")
+    try:
+        from alternative_data import analyze_alternative_data
+        alternative_analysis = analyze_alternative_data()
+        alternative_bias = alternative_analysis.get("directional_bias")
+    except Exception as e:
+        print(f"  ⚠ Alternative data analysis failed: {e}")
+        alternative_analysis = None
+        alternative_bias = None
+
+    # Classify regime (with alternative data if available)
     print(f"\n  🎯 Classifying market regime...")
-    regime = classify_market_regime(spy_analysis, qqq_analysis, vix_data, fomc_data)
+    regime = classify_market_regime(spy_analysis, qqq_analysis, vix_data, fomc_data, alternative_bias)
     print(f"     Regime: {regime['regime']}")
     print(f"     {regime['description']}")
     print(f"\n  📐 Scoring modifiers:")
@@ -347,6 +379,7 @@ def generate_weekly_context() -> dict:
         "spy": spy_analysis,
         "qqq": qqq_analysis,
         "vix": vix_data,
+        "alternative_data": alternative_analysis if alternative_analysis else {"error": "unavailable"},
         "regime": regime,
     }
 

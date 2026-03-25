@@ -275,6 +275,229 @@ Weekly context is saved to `journal/weekly_context.json` and loaded by the agent
 
 ---
 
+## Alternative Data & Market Sentiment (Phase 4)
+
+Beyond technical analysis and market regime, the system incorporates alternative data sources to detect asymmetric opportunities and directional bias.
+
+### Data Sources
+
+#### 1. Polymarket Prediction Markets
+
+Queries decentralized prediction markets for forward-looking sentiment:
+
+**Markets Monitored:**
+- Fed rate cut probability
+- CPI inflation expectations
+- Jobs report beat/miss likelihood
+- Major economic events
+
+**Interpretation:**
+```python
+# Example: 65% chance of rate cut
+polymarket_score = +3  # Dovish = bullish for stocks
+
+# Example: 80% chance inflation stays elevated
+polymarket_score = -2  # Hawkish = bearish for stocks
+```
+
+**Key Insight:** Prediction markets often lead price action. If Polymarket shows 70% conviction on a dovish Fed but stocks haven't rallied yet, that's an asymmetric long opportunity.
+
+#### 2. Commodities Analysis
+
+Monitors key commodities and their historical correlation with equities:
+
+**Gold (GLD):**
+- Resistance: $200
+- Breakout above resistance = flight to safety = bearish for stocks (-3 pts)
+- Below support = risk-on = bullish for stocks (+3 pts)
+
+**Oil (USO):**
+- Above $80 = inflation concerns = bearish for stocks (-2 pts)
+- Below $60 = low inflation = bullish for stocks (+2 pts)
+
+**Silver (SLV):**
+- Industrial demand proxy, correlated with tech sector
+
+**Historical Context:**
+- Gold breaking out in 2008, 2020 preceded major stock corrections
+- Oil spikes (2022) led to bearish pressure on equities
+- Commodities can signal hidden risks not yet priced into stocks
+
+#### 3. Financial News Scanning
+
+Scans past week's major financial events and extracts sentiment:
+
+**Event Classification:**
+```markdown
+| Event | Sentiment | Impact | Score |
+|-------|-----------|--------|-------|
+| "Fed signals higher for longer" | Bearish | High | -3 |
+| "Tech earnings beat" | Bullish | Medium | +2 |
+| "Consumer confidence drops" | Bearish | Medium | -2 |
+```
+
+**Aggregation:**
+- High-impact events weighted more heavily
+- Sentiment averaged across all events
+- Bias score: +3 (bullish), 0 (neutral), -3 (bearish)
+
+#### 4. Unified Sentiment Scoring
+
+All alternative data sources combined into single directional bias:
+
+```python
+weighted_score = (
+    polymarket_score * 0.4 +    # Forward-looking
+    commodities_score * 0.3 +    # Structural/inter-market
+    news_score * 0.3             # Recent events
+)
+
+# Convert to weight adjustments
+if weighted_score > 3:
+    long_boost = +10
+    short_penalty = -15
+elif weighted_score < -3:
+    long_penalty = -15
+    short_boost = +10
+```
+
+### Real-World Examples
+
+**Example 1: Polymarket Divergence**
+```
+Polymarket: 75% chance of dovish Fed pivot
+SPY/QQQ: Still consolidating, not rallying yet
+Gold: Not breaking down (risk still on)
+News: Mixed
+
+Alternative Data Bias: Strong Bullish
+Action: +10 pts for long setups, -15 pts for shorts
+Rationale: Prediction markets showing conviction not yet in price
+```
+
+**Example 2: Gold Flight-to-Safety Warning**
+```
+Gold: Breaking above $200 resistance (flight to safety)
+SPY: Still near highs (complacency)
+VIX: Only 15 (normal fear)
+Polymarket: 40% chance of recession (growing)
+
+Alternative Data Bias: Bearish
+Action: -8 pts for longs, +5 pts for shorts
+Rationale: Gold warning of hidden risk, asymmetric short opportunity
+```
+
+**Example 3: Oil Inflation Shock**
+```
+Oil: Above $80 (inflation concern)
+Polymarket: 60% chance CPI stays elevated
+News: Fed chair warns about inflation persistence
+SPY/QQQ: Vulnerable to hawkish surprise
+
+Alternative Data Bias: Bearish
+Action: -10 pts for longs, +8 pts for shorts
+Rationale: Multiple sources confirm inflation narrative
+```
+
+**Example 4: Neutral Consolidation**
+```
+Polymarket: 50/50 on Fed decision
+Commodities: Range-bound
+News: Mixed signals
+SPY/QQQ: Sideways
+
+Alternative Data Bias: Neutral
+Action: 0 pts adjustment
+Rationale: No edge from alternative data, rely on technicals
+```
+
+### Asymmetric Opportunities
+
+System flags specific asymmetric setups:
+
+**Type 1: Prediction Market Divergence**
+- Polymarket shows >70% conviction
+- Price hasn't moved to reflect probability
+- Opportunity: Early positioning before the move
+
+**Type 2: Gold Breakout Warning**
+- Gold breaks resistance while stocks near highs
+- Historical precedent: Often precedes correction
+- Opportunity: Short stocks or reduce exposure
+
+**Type 3: Commodities Correlation Break**
+- Normal correlation breaks down
+- Example: Oil rallying but stocks not falling (yet)
+- Opportunity: Position for correlation mean-reversion
+
+### Integration with Scoring
+
+Alternative data adjustments layer on top of killzone weights and regime modifiers:
+
+```python
+# Final scoring formula
+score = base + htf_bonus + regime_adj + alt_data_adj
+
+# Example calculation
+score = 70 (base) + 5 (HTF) + 5 (bullish regime) + 10 (strong alt data) = 90
+```
+
+**Scoring Output:**
+```
+A+ SCORE: 90  (base: 70 + weekly: +5 + monthly: +0 = +5 HTF + regime: +15)
+Using NY_AM killzone weights
+Market regime: strong_bullish_trend
+
+  ✓ liquidity_sweep: 15pts
+  ✓ premium_discount: 12pts
+  ...
+  ✓ regime_adjustment: +5pts — strong_bullish_trend
+  ✓ alt_data_adjustment: +10pts — strong_bullish (Polymarket divergence)
+```
+
+### Files Created
+
+**`journal/weekly_context.json`** now includes:
+```json
+{
+  "alternative_data": {
+    "polymarket": {
+      "overall_sentiment": {
+        "direction": "bullish_tilt",
+        "bias_score": 5
+      }
+    },
+    "commodities": {
+      "gold": {"trend": "range_bound", "signal": 0},
+      "oil": {"trend": "low_inflation_supportive", "signal": 2},
+      "summary": {"bias_score": 3}
+    },
+    "news": {
+      "sentiment": "bullish",
+      "bias_score": 3
+    },
+    "directional_bias": {
+      "directional_bias": "strong_bullish",
+      "confidence": 0.75,
+      "weighted_score": 8.4,
+      "bias_score": 8,
+      "weight_adjustments": {
+        "long_boost": 10,
+        "short_penalty": -15
+      },
+      "asymmetric_opportunities": [...]
+    }
+  }
+}
+```
+
+**Run Standalone:**
+```bash
+python3 alternative_data.py
+```
+
+---
+
 ## Configuration
 
 ### Learning Parameters (`daily_review.py`)
