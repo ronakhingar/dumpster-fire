@@ -1,0 +1,43 @@
+---
+description: Discord trading channel integration — status and plan
+alwaysApply: true
+---
+
+# Discord Trading Channel Integration
+
+## Status: BLOCKED — waiting for server admin to approve bot membership
+
+## Credentials
+- Bot token is stored in `.env` as `DISCORD_BOT_TOKEN`
+- Channel ID: `545047039084593163` (stored as `DISCORD_CHANNEL_ID`)
+- Guild/Server ID: `400345242882146314` (stored as `DISCORD_GUILD_ID`)
+- Bot needs "Read Message History" + "View Channels" + "Message Content Intent"
+
+## Plan (execute once bot is approved)
+
+### 1. Postgres schema
+- `messages` — raw Discord messages
+- `trades` — parsed trade signals (symbol, direction, entry, stop, target, result, setup_type, reasoning)
+- `pipeline_state` — batch processing progress (resumable)
+- `insights` — extracted patterns and trader stats
+
+### 2. Batch pipeline (`discord_analysis/pipeline.py`)
+- Load historical JSON export (from DiscordChatExporter) into Postgres
+- Process in chunks of 500 messages, commit after each chunk
+- Resumable via `pipeline_state` table
+- Extract trades, setups, levels, and results from message content
+
+### 3. Live polling (integrated into agent.py 2-min loop)
+- Every scan cycle: `GET /channels/{channel_id}/messages?after={last_msg_id}`
+- Parse new trade calls, levels, bias mentions
+- Store in Postgres
+- If a credible trader called a level that aligns with current setup → boost confluence score
+
+### 4. Discord confluence scoring (add to memories.py)
+- Bonus points when agent's setup aligns with Discord trade calls
+- Weight by trader's historical win rate from Postgres
+- Cap the bonus like HTF liquidity bonus
+
+## User instruction
+User said: "admin has to first approve to add this bot as member. Till then wait."
+Do NOT attempt to use the Discord API until the user confirms the bot has been approved.

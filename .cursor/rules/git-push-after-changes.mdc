@@ -1,0 +1,16 @@
+---
+description: Always commit and push code changes to GitHub after making modifications
+alwaysApply: true
+---
+
+# Git Push After Changes
+
+After making any code changes to this project, ALWAYS:
+
+1. `git add` the changed files
+2. `git commit` with a clear, descriptive message summarizing what changed and why
+3. `git push` to origin
+
+Do NOT wait for the user to ask — push automatically after every set of code modifications is complete.
+
+If multiple related changes are made in sequence (e.g. updating agent.py then run_agent.sh), batch them into a single commit rather than committing each file separately.
