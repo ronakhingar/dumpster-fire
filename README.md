@@ -53,7 +53,7 @@ See [AGENT_SERVICE.md](AGENT_SERVICE.md) for full documentation.
 
 ## Self-Learning System
 
-Agent reviews weekly performance (Saturdays) and adjusts scoring weights:
+Agent reviews weekly performance (Saturdays) and adjusts scoring weights **per killzone** (Asia, London, NY AM, NY Lunch, NY PM):
 
 ```bash
 # View learned weights

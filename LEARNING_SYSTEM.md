@@ -2,9 +2,13 @@
 
 ## Overview
 
-The agent includes a **self-learning system** that reviews weekly performance and automatically adjusts A+ scoring criteria weights based on what actually works in live trading.
+The agent includes a **self-learning system** that reviews weekly performance and automatically adjusts A+ scoring criteria weights based on what actually works in live trading. **Weights are learned separately for each killzone** (Asia, London, NY AM, NY Lunch, NY PM), enabling contextual optimization.
 
-**Key Feature:** The agent learns from its mistakes and successes, continuously optimizing its decision-making without manual intervention. Reviews run weekly (Saturdays) to allow sufficient time for weights to prove themselves.
+**Key Features:**
+- The agent learns from its mistakes and successes, continuously optimizing its decision-making without manual intervention
+- Reviews run weekly (Saturdays) to allow sufficient time for weights to prove themselves
+- **Killzone-specific weights** adapt to different market conditions throughout the day
+- A criterion that works well in London may be weighted differently in NY PM
 
 ---
 
@@ -19,16 +23,18 @@ Every Saturday at 4:30 PM ET, the system:
    - Matches order placements with closes
    - Calculates P&L for each trade
 
-2. **Analyzes Performance**
-   - Correlates each A+ criterion with win/loss outcomes
-   - Calculates win rate when criterion is present vs absent
-   - Identifies which criteria are actually predictive
+2. **Analyzes Performance by Killzone**
+   - Groups trades by killzone (Asia, London, NY AM, NY Lunch, NY PM)
+   - Correlates each A+ criterion with win/loss outcomes per killzone
+   - Calculates win rate when criterion is present vs absent in each killzone
+   - Identifies which criteria are actually predictive in specific market sessions
 
-3. **Adjusts Weights**
-   - Increases weight for criteria correlated with wins
-   - Decreases weight for criteria correlated with losses
+3. **Adjusts Weights by Killzone**
+   - Increases weight for criteria correlated with wins in that killzone
+   - Decreases weight for criteria correlated with losses in that killzone
    - Uses exponential moving average to smooth changes
    - Enforces minimum/maximum bounds
+   - Each killzone learns independently
 
 4. **Saves Results**
    - Persists learned weights to `learned_weights.json`
@@ -100,6 +106,56 @@ Over time, weights converge to optimal values based on YOUR specific market cond
 
 ---
 
+## Killzone-Specific Learning
+
+### Why Killzone-Specific Weights?
+
+Different trading sessions have different characteristics:
+- **London** (02:00-05:00 ET): High volatility, liquidity sweeps common
+- **NY AM** (09:30-11:00 ET): Algo bursts, FVG setups frequent
+- **NY Lunch** (12:00-13:00 ET): Low volume, choppy, fewer quality setups
+- **NY PM** (13:30-16:00 ET): Directional moves, momentum plays
+
+The same criterion may be:
+- **Highly predictive** in one killzone (e.g., liquidity_sweep in London)
+- **Less relevant** in another (e.g., liquidity_sweep in NY Lunch)
+
+### Example: Killzone Learning in Action
+
+#### Week 1 Trades
+```
+London trades:   3W-1L (75% win rate) → liquidity_sweep present in all 3 wins
+NY AM trades:    1W-2L (33% win rate) → liquidity_sweep present in both losses
+NY PM trades:    2W-1L (67% win rate) → no liquidity_sweep in any trade
+```
+
+#### Week 2 Adjusted Weights
+```python
+learned_weights = {
+    "London": {
+        "liquidity_sweep": 25,  # +5 (strongly positive in London)
+        ...
+    },
+    "NY_AM": {
+        "liquidity_sweep": 15,  # -5 (negatively correlated in NY AM)
+        ...
+    },
+    "NY_PM": {
+        "liquidity_sweep": 20,  # no change (insufficient data)
+        ...
+    }
+}
+```
+
+**Result:** Agent now knows:
+- In **London**: Prioritize liquidity sweep setups (25 pts vs default 20)
+- In **NY AM**: De-prioritize liquidity sweep setups (15 pts vs default 20)
+- In **NY PM**: Use default weighting (20 pts)
+
+This contextual learning mirrors how professional traders adjust their playbook based on the session.
+
+---
+
 ## Configuration
 
 ### Learning Parameters (`daily_review.py`)
@@ -127,13 +183,40 @@ CONFIDENCE_THRESHOLD = 0.6     # Min 60% win rate to increase weight
 ## Files Created
 
 ### `learned_weights.json`
-Persisted learned weights:
+Persisted learned weights with killzone-specific values:
 ```json
 {
   "criteria_weights": {
-    "liquidity_sweep": 18,
-    "premium_discount": 13,
-    ...
+    "global": {
+      "liquidity_sweep": 19,
+      "premium_discount": 12,
+      ...
+    },
+    "Asia": {
+      "liquidity_sweep": 18,
+      "premium_discount": 15,
+      ...
+    },
+    "London": {
+      "liquidity_sweep": 25,
+      "premium_discount": 10,
+      ...
+    },
+    "NY_AM": {
+      "liquidity_sweep": 15,
+      "premium_discount": 12,
+      ...
+    },
+    "NY_Lunch": {
+      "liquidity_sweep": 12,
+      "premium_discount": 8,
+      ...
+    },
+    "NY_PM": {
+      "liquidity_sweep": 20,
+      "premium_discount": 14,
+      ...
+    }
   },
   "weekly_liquidity_bonus": {...},
   "monthly_liquidity_bonus": {...},

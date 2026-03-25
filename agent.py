@@ -88,7 +88,27 @@ def _load_scoring_weights():
                         learned["monthly_liquidity_bonus"])
         except Exception as e:
             print(f"  ⚠ Could not load learned weights: {e}. Using defaults.")
-    return SCORE_CRITERIA, WEEKLY_LIQUIDITY_BONUS, MONTHLY_LIQUIDITY_BONUS
+    return {"global": SCORE_CRITERIA}, WEEKLY_LIQUIDITY_BONUS, MONTHLY_LIQUIDITY_BONUS
+
+
+def get_contextual_weights(killzone_label: str | None) -> dict:
+    """
+    Get killzone-specific weights based on current context.
+
+    Args:
+        killzone_label: Current killzone label (Asia, London, NY_AM, NY_Lunch, NY_PM) or None
+
+    Returns:
+        Dictionary of criterion weights for the current killzone
+    """
+    if killzone_label and killzone_label in ACTIVE_SCORE_CRITERIA:
+        return ACTIVE_SCORE_CRITERIA[killzone_label]
+    elif "global" in ACTIVE_SCORE_CRITERIA:
+        return ACTIVE_SCORE_CRITERIA["global"]
+    else:
+        # Backward compatibility: flat structure
+        return ACTIVE_SCORE_CRITERIA
+
 
 # Initialize scoring weights (learned or default)
 ACTIVE_SCORE_CRITERIA, ACTIVE_WEEKLY_BONUS, ACTIVE_MONTHLY_BONUS = _load_scoring_weights()
@@ -316,10 +336,13 @@ def score_setup(
     daily_bias: str | None = None,
     weekly_context: dict | None = None,
     monthly_context: dict | None = None,
+    killzone_label: str | None = None,
 ) -> tuple[int, dict[str, bool], dict]:
     """
     Score an analysis result against the A+ criteria from memories.py,
     plus weekly + monthly liquidity proximity bonus (capped at HTF_BONUS_CAP).
+
+    Uses killzone-specific learned weights when available.
 
     Returns (total_score, {criterion: met_bool}, htf_bonus_info).
     """
@@ -327,6 +350,9 @@ def score_setup(
     setup = analysis["detected_setup"]
     side = analysis["recommendation"]
     price = ms["price"]
+
+    # Get contextual weights for current killzone
+    contextual_weights = get_contextual_weights(killzone_label)
 
     checks: dict[str, bool] = {}
 
@@ -382,7 +408,7 @@ def score_setup(
     else:
         checks["rsi_not_extreme"] = False
 
-    base_score = sum(ACTIVE_SCORE_CRITERIA[k] for k, met in checks.items() if met)
+    base_score = sum(contextual_weights[k] for k, met in checks.items() if met)
 
     # ── HTF liquidity proximity bonus (weekly + monthly, capped) ──────
     # Use active (learned) bonus tables
@@ -821,6 +847,11 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
     stats.tick_api()
     equity = acct["equity"]
 
+    # Get current killzone for contextual weight selection
+    is_kz, kz_label = in_killzone()
+    if kz_label:
+        print(f"  🎯 Using {kz_label} killzone-specific weights")
+
     preflight = [
         ("Killzone", _check_killzone()),
         ("Trade Limit", _check_daily_trade_limit()),
@@ -932,16 +963,20 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         stats.setups_detected += 1
 
         # ── Step 4: A+ Scoring + HTF Liquidity Bonus ─────────────────
-        score, checks, htf_info = score_setup(intraday, daily_bias, weekly_ctx, monthly_ctx)
-        base_score = sum(ACTIVE_SCORE_CRITERIA[k] for k, met in checks.items() if met)
+        score, checks, htf_info = score_setup(intraday, daily_bias, weekly_ctx, monthly_ctx, kz_label)
+        # Get contextual weights for logging
+        contextual_weights = get_contextual_weights(kz_label)
+        base_score = sum(contextual_weights[k] for k, met in checks.items() if met)
         wb = htf_info.get("weekly_bonus", 0)
         mb = htf_info.get("monthly_bonus", 0)
         htf_total = htf_info.get("combined_bonus", 0)
 
         print(f"\n  A+ SCORE: {score}  (base: {base_score} + weekly: +{wb} + monthly: +{mb} = +{htf_total} HTF)")
         print(f"  Threshold: {A_PLUS_THRESHOLD}  |  HTF cap: {HTF_BONUS_CAP}")
+        if kz_label:
+            print(f"  Using {kz_label} killzone weights")
         for criterion, met in checks.items():
-            pts = ACTIVE_SCORE_CRITERIA[criterion]
+            pts = contextual_weights[criterion]
             mark = "✓" if met else "✗"
             print(f"    {mark} {criterion}: {pts}pts")
         if wb > 0:

@@ -49,14 +49,30 @@ def load_learned_weights() -> dict:
     Load learned weights from disk, or return defaults if none exist.
 
     Returns dict with:
-      - criteria_weights: {criterion: weight}
+      - criteria_weights: {
+            "global": {criterion: weight},  # Fallback weights
+            "Asia": {criterion: weight},
+            "London": {criterion: weight},
+            "NY_AM": {criterion: weight},
+            "NY_Lunch": {criterion: weight},
+            "NY_PM": {criterion: weight}
+        }
       - weekly_liquidity_bonus: {proximity: bonus}
       - monthly_liquidity_bonus: {proximity: bonus}
       - meta: learning stats
     """
     if not WEIGHTS_FILE.exists():
+        # Initialize with same weights for all killzones
+        default_weights = dict(SCORE_CRITERIA)
         return {
-            "criteria_weights": dict(SCORE_CRITERIA),
+            "criteria_weights": {
+                "global": default_weights.copy(),
+                "Asia": default_weights.copy(),
+                "London": default_weights.copy(),
+                "NY_AM": default_weights.copy(),
+                "NY_Lunch": default_weights.copy(),
+                "NY_PM": default_weights.copy(),
+            },
             "weekly_liquidity_bonus": dict(WEEKLY_LIQUIDITY_BONUS),
             "monthly_liquidity_bonus": dict(MONTHLY_LIQUIDITY_BONUS),
             "meta": {
@@ -68,7 +84,24 @@ def load_learned_weights() -> dict:
         }
 
     with open(WEIGHTS_FILE, "r") as f:
-        return json.load(f)
+        weights = json.load(f)
+
+        # Backward compatibility: migrate old flat structure to killzone structure
+        if "criteria_weights" in weights and isinstance(weights["criteria_weights"], dict):
+            if "global" not in weights["criteria_weights"]:
+                # Old format detected, migrate to new format
+                old_weights = weights["criteria_weights"]
+                weights["criteria_weights"] = {
+                    "global": old_weights.copy(),
+                    "Asia": old_weights.copy(),
+                    "London": old_weights.copy(),
+                    "NY_AM": old_weights.copy(),
+                    "NY_Lunch": old_weights.copy(),
+                    "NY_PM": old_weights.copy(),
+                }
+                print("  🔄 Migrated weights to killzone-specific structure")
+
+        return weights
 
 
 def save_learned_weights(weights: dict):
@@ -79,6 +112,83 @@ def save_learned_weights(weights: dict):
     print(f"  💾 Saved learned weights to {WEIGHTS_FILE}")
 
 
+def log_weight_changes_by_killzone(killzone_analysis: dict, old_weights: dict,
+                                   new_weights: dict, num_trades: int):
+    """
+    Append killzone-specific weight change details to learning history JSONL file.
+
+    Tracks what changed, when, and why for each weight adjustment per killzone.
+    """
+    LEARNING_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now(ET).isoformat()
+    killzone_changes = {}
+
+    for killzone, analysis in killzone_analysis.items():
+        changes = []
+        for criterion, stats in analysis.items():
+            old_w = old_weights["criteria_weights"][killzone][criterion]
+            new_w = new_weights[killzone][criterion]
+
+            if old_w != new_w:
+                change = new_w - old_w
+
+                # Build reasoning statement
+                win_rate_present = stats["win_rate_when_present"]
+                win_rate_absent = stats["win_rate_when_absent"]
+                correlation = stats["correlation"]
+                present_wins = stats["present_wins"]
+                present_losses = stats["present_losses"]
+                absent_wins = stats["absent_wins"]
+                absent_losses = stats["absent_losses"]
+
+                # Determine reasoning
+                if change > 0:
+                    reason = (f"Increased in {killzone} because win rate was {win_rate_present:.0%} when present "
+                             f"({present_wins}W/{present_losses}L) vs {win_rate_absent:.0%} when absent "
+                             f"({absent_wins}W/{absent_losses}L). Correlation: {correlation:+.3f}")
+                elif change < 0:
+                    reason = (f"Decreased in {killzone} because win rate was {win_rate_present:.0%} when present "
+                             f"({present_wins}W/{present_losses}L) vs {win_rate_absent:.0%} when absent "
+                             f"({absent_wins}W/{absent_losses}L). Correlation: {correlation:+.3f}")
+                else:
+                    continue
+
+                change_entry = {
+                    "criterion": criterion,
+                    "killzone": killzone,
+                    "old_weight": old_w,
+                    "new_weight": new_w,
+                    "change": change,
+                    "win_rate_when_present": win_rate_present,
+                    "win_rate_when_absent": win_rate_absent,
+                    "correlation": correlation,
+                    "present_record": f"{present_wins}W-{present_losses}L",
+                    "absent_record": f"{absent_wins}W-{absent_losses}L",
+                    "reason": reason,
+                }
+                changes.append(change_entry)
+
+        if changes:
+            killzone_changes[killzone] = changes
+
+    if killzone_changes:
+        total_changes = sum(len(changes) for changes in killzone_changes.values())
+        log_entry = {
+            "timestamp": timestamp,
+            "date": datetime.now(ET).strftime("%Y-%m-%d"),
+            "version": old_weights["meta"]["version"] + 1,
+            "total_trades_analyzed": num_trades,
+            "killzone_changes": killzone_changes,
+        }
+
+        # Append to JSONL file
+        with open(LEARNING_HISTORY_FILE, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+
+        print(f"  📝 Logged {total_changes} weight changes across {len(killzone_changes)} killzones")
+
+
 def log_weight_changes(analysis: dict, old_weights: dict, new_weights: dict,
                        num_trades: int):
     """
@@ -86,6 +196,8 @@ def log_weight_changes(analysis: dict, old_weights: dict, new_weights: dict,
 
     Tracks what changed, when, and why for each weight adjustment.
     Each line is a JSON object with timestamp and detailed reasoning.
+
+    NOTE: This is the legacy function for flat weight structure.
     """
     LEARNING_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -301,6 +413,7 @@ def get_closed_trades_from_journal(days_back: int = 30) -> list[dict]:
             "scores": decision.get("scores", {}),
             "criteria": decision.get("criteria", {}),
             "htf_context": decision.get("htf_context", {}),
+            "killzone": decision.get("killzone", "unknown"),
             "timestamp": close_data.get("logged_at"),
         }
         trades.append(trade)
@@ -309,6 +422,30 @@ def get_closed_trades_from_journal(days_back: int = 30) -> list[dict]:
 
 
 # ─── Performance Analysis ─────────────────────────────────────────────────────
+
+def analyze_criteria_by_killzone(trades: list[dict]) -> dict:
+    """
+    Analyze criteria performance separately for each killzone.
+
+    Returns dict with:
+      {
+        "Asia": {criterion: analysis_stats},
+        "London": {criterion: analysis_stats},
+        ...
+      }
+    """
+    killzone_labels = ["Asia", "London", "NY_AM", "NY_Lunch", "NY_PM"]
+    killzone_analysis = {}
+
+    for killzone in killzone_labels:
+        kz_trades = [t for t in trades if t.get("killzone") == killzone]
+        if kz_trades:
+            analysis = analyze_criteria_performance(kz_trades)
+            if analysis:
+                killzone_analysis[killzone] = analysis
+
+    return killzone_analysis
+
 
 def analyze_criteria_performance(trades: list[dict]) -> dict:
     """
@@ -388,12 +525,76 @@ def analyze_criteria_performance(trades: list[dict]) -> dict:
 
 # ─── Weight Adjustment ────────────────────────────────────────────────────────
 
+def adjust_weights_by_killzone(killzone_analysis: dict, current_weights: dict) -> dict:
+    """
+    Apply learning rate to adjust weights for each killzone separately.
+
+    Args:
+        killzone_analysis: {killzone: {criterion: stats}}
+        current_weights: Current weight structure with killzone-specific weights
+
+    Returns:
+        New killzone-specific weights: {killzone: {criterion: weight}}
+    """
+    new_weights = {}
+
+    for killzone in ["global", "Asia", "London", "NY_AM", "NY_Lunch", "NY_PM"]:
+        if killzone == "global":
+            # Global weights are average of all killzone weights
+            continue
+
+        if killzone in killzone_analysis:
+            # Adjust based on this killzone's performance
+            analysis = killzone_analysis[killzone]
+            current_kz_weights = current_weights["criteria_weights"][killzone]
+            new_weights[killzone] = {}
+
+            for criterion in SCORE_CRITERIA.keys():
+                if criterion in analysis:
+                    stats = analysis[criterion]
+                    current = current_kz_weights[criterion]
+                    correlation = stats["correlation"]
+                    win_rate_present = stats["win_rate_when_present"]
+
+                    # Only increase weight if criterion has good win rate when present
+                    if correlation > 0 and win_rate_present >= CONFIDENCE_THRESHOLD:
+                        adjustment = stats["suggested_adjustment"] * LEARNING_RATE
+                        new_weight = current + adjustment
+                    elif correlation < 0:
+                        # Decrease weight if negatively correlated
+                        adjustment = stats["suggested_adjustment"] * LEARNING_RATE
+                        new_weight = current + adjustment
+                    else:
+                        new_weight = current
+
+                    # Enforce bounds
+                    new_weight = max(MIN_WEIGHT, min(MAX_WEIGHT, new_weight))
+                    new_weights[killzone][criterion] = round(new_weight)
+                else:
+                    # No data for this criterion in this killzone, keep current
+                    new_weights[killzone][criterion] = current_kz_weights[criterion]
+        else:
+            # No trades in this killzone, keep current weights
+            new_weights[killzone] = dict(current_weights["criteria_weights"][killzone])
+
+    # Calculate global weights as average across all killzones
+    new_weights["global"] = {}
+    for criterion in SCORE_CRITERIA.keys():
+        avg_weight = sum(new_weights[kz][criterion] for kz in ["Asia", "London", "NY_AM", "NY_Lunch", "NY_PM"]) / 5
+        new_weights["global"][criterion] = round(avg_weight)
+
+    return new_weights
+
+
 def adjust_weights(analysis: dict, current_weights: dict) -> dict:
     """
     Apply learning rate to gradually adjust weights based on performance.
     Uses exponential moving average to smooth changes.
 
     new_weight = current_weight + (learning_rate × suggested_adjustment)
+
+    NOTE: This is the legacy function for flat weight structure.
+    Use adjust_weights_by_killzone() for killzone-specific learning.
     """
     new_weights = dict(current_weights["criteria_weights"])
 
@@ -540,6 +741,141 @@ def generate_review_report(trades: list[dict], analysis: dict,
     return report
 
 
+def generate_review_report_by_killzone(trades: list[dict], killzone_analysis: dict,
+                                        old_weights: dict, new_weights: dict) -> str:
+    """Generate markdown report of weekly review with killzone-specific analysis."""
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+
+    completed = [t for t in trades if t["outcome"] in ("win", "loss")]
+    wins = [t for t in completed if t["outcome"] == "win"]
+    losses = [t for t in completed if t["outcome"] == "loss"]
+
+    win_rate = len(wins) / len(completed) if completed else 0
+    total_pnl = sum(t.get("pnl", 0) for t in completed)
+
+    report = f"""# Weekly Review - {today}
+
+## Performance Summary
+
+- **Trades Completed:** {len(completed)}
+- **Wins:** {len(wins)}
+- **Losses:** {len(losses)}
+- **Win Rate:** {win_rate:.1%}
+- **Total P&L:** ${total_pnl:.2f}
+
+## Killzone Breakdown
+
+"""
+
+    # Killzone performance table
+    for killzone in ["Asia", "London", "NY_AM", "NY_Lunch", "NY_PM"]:
+        kz_trades = [t for t in trades if t.get("killzone") == killzone]
+        if kz_trades:
+            kz_completed = [t for t in kz_trades if t["outcome"] in ("win", "loss")]
+            kz_wins = [t for t in kz_completed if t["outcome"] == "win"]
+            kz_losses = [t for t in kz_completed if t["outcome"] == "loss"]
+            kz_win_rate = len(kz_wins) / len(kz_completed) if kz_completed else 0
+            kz_pnl = sum(t.get("pnl", 0) for t in kz_completed)
+
+            report += f"""### {killzone}
+- Trades: {len(kz_completed)} ({len(kz_wins)}W/{len(kz_losses)}L)
+- Win Rate: {kz_win_rate:.1%}
+- P&L: ${kz_pnl:.2f}
+
+"""
+
+    report += f"""## Weight Changes by Killzone
+
+"""
+
+    # Show weight changes for each killzone
+    for killzone in ["Asia", "London", "NY_AM", "NY_Lunch", "NY_PM"]:
+        if killzone in killzone_analysis:
+            analysis = killzone_analysis[killzone]
+            changes = []
+
+            for criterion in sorted(analysis.keys()):
+                old_w = old_weights["criteria_weights"][killzone][criterion]
+                new_w = new_weights[killzone][criterion]
+                if old_w != new_w:
+                    change = new_w - old_w
+                    changes.append(f"  - **{criterion}**: {old_w} → {new_w} ({change:+d})")
+
+            if changes:
+                report += f"### {killzone}\n\n"
+                report += "\n".join(changes)
+                report += "\n\n"
+
+    if not any(killzone in killzone_analysis for killzone in ["Asia", "London", "NY_AM", "NY_Lunch", "NY_PM"]):
+        report += "No weight changes this review.\n\n"
+
+    # Detailed change log
+    report += f"""## Detailed Change Log by Killzone
+
+"""
+
+    for killzone in ["Asia", "London", "NY_AM", "NY_Lunch", "NY_PM"]:
+        if killzone in killzone_analysis:
+            analysis = killzone_analysis[killzone]
+            killzone_changes = []
+
+            for criterion in sorted(analysis.keys()):
+                stats = analysis[criterion]
+                old_w = old_weights["criteria_weights"][killzone][criterion]
+                new_w = new_weights[killzone][criterion]
+
+                if old_w != new_w:
+                    change = new_w - old_w
+                    win_rate_present = stats["win_rate_when_present"]
+                    win_rate_absent = stats["win_rate_when_absent"]
+                    correlation = stats["correlation"]
+                    present_wins = stats["present_wins"]
+                    present_losses = stats["present_losses"]
+                    absent_wins = stats["absent_wins"]
+                    absent_losses = stats["absent_losses"]
+
+                    direction = "Increased" if change > 0 else "Decreased"
+                    killzone_changes.append(
+                        f"#### {criterion}: {old_w} → {new_w} ({change:+d})\n\n"
+                        f"**{direction}** in {killzone} because:\n"
+                        f"- Win rate when present: **{win_rate_present:.0%}** "
+                        f"({present_wins}W/{present_losses}L)\n"
+                        f"- Win rate when absent: **{win_rate_absent:.0%}** "
+                        f"({absent_wins}W/{absent_losses}L)\n"
+                        f"- Correlation: **{correlation:+.3f}** "
+                        f"({'positive' if correlation > 0 else 'negative'})\n"
+                    )
+
+            if killzone_changes:
+                report += f"### {killzone}\n\n"
+                report += "\n".join(killzone_changes)
+                report += "\n"
+
+    if not any(killzone in killzone_analysis for killzone in ["Asia", "London", "NY_AM", "NY_Lunch", "NY_PM"]):
+        report += "No weight changes this review.\n\n"
+
+    report += f"""
+## Learning Parameters
+
+- Learning Rate: {LEARNING_RATE}
+- Confidence Threshold: {CONFIDENCE_THRESHOLD}
+- Min Trades to Learn: {MIN_TRADES_TO_LEARN}
+- Weight Bounds: [{MIN_WEIGHT}, {MAX_WEIGHT}]
+
+## Trades Analyzed
+
+"""
+
+    for trade in completed:
+        outcome_emoji = "✓" if trade["outcome"] == "win" else "✗"
+        pnl = trade.get("pnl", 0)
+        killzone = trade.get("killzone", "unknown")
+        report += (f"- {outcome_emoji} {trade['symbol']} {trade.get('detected_setup', 'unknown')} "
+                  f"({killzone}) P&L: ${pnl:.2f}\n")
+
+    return report
+
+
 def save_review_report(report: str):
     """Save review report to disk."""
     REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
@@ -584,21 +920,30 @@ def run_daily_review():
         print(f"  ℹ No completed trades to analyze yet.")
         return
 
-    # Analyze criteria performance
-    print(f"\n  🔍 Analyzing criteria performance...")
-    analysis = analyze_criteria_performance(trades)
+    # Analyze criteria performance by killzone
+    print(f"\n  🔍 Analyzing criteria performance by killzone...")
+    killzone_analysis = analyze_criteria_by_killzone(trades)
 
-    if not analysis:
+    if not killzone_analysis:
         print(f"  ℹ Not enough completed trades to adjust weights yet.")
-        print(f"     Need at least {MIN_TRADES_TO_LEARN} completed trades.")
+        print(f"     Need at least {MIN_TRADES_TO_LEARN} completed trades per killzone.")
         return
 
-    # Adjust weights
-    print(f"\n  ⚙️  Adjusting weights based on performance...")
-    new_criteria_weights = adjust_weights(analysis, current_weights)
+    # Show killzone trade distribution
+    print(f"\n  📊 Trade distribution by killzone:")
+    for killzone in ["Asia", "London", "NY_AM", "NY_Lunch", "NY_PM"]:
+        kz_trades = [t for t in trades if t.get("killzone") == killzone]
+        if kz_trades:
+            wins = len([t for t in kz_trades if t["outcome"] == "win"])
+            losses = len([t for t in kz_trades if t["outcome"] == "loss"])
+            print(f"     {killzone:10} {len(kz_trades):2} trades ({wins}W/{losses}L)")
+
+    # Adjust weights by killzone
+    print(f"\n  ⚙️  Adjusting weights based on killzone-specific performance...")
+    new_criteria_weights = adjust_weights_by_killzone(killzone_analysis, current_weights)
 
     # Log weight changes with detailed reasoning
-    log_weight_changes(analysis, current_weights, new_criteria_weights, len(trades))
+    log_weight_changes_by_killzone(killzone_analysis, current_weights, new_criteria_weights, len(trades))
 
     # Update weights dict
     updated_weights = {
@@ -615,7 +960,7 @@ def run_daily_review():
 
     # Generate report
     print(f"\n  📊 Generating review report...")
-    report = generate_review_report(trades, analysis, current_weights, new_criteria_weights)
+    report = generate_review_report_by_killzone(trades, killzone_analysis, current_weights, new_criteria_weights)
     save_review_report(report)
 
     # Print report to console
