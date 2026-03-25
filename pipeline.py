@@ -658,18 +658,23 @@ def main():
         show_status()
         return
 
-    stages = {
-        "discover": discover,
-        "transcribe": lambda: transcribe_all(model_name=args.model),
-        "frames": extract_frames_all,
-        "chats": parse_chats,
-    }
+    stages = [
+        ("discover", discover),
+        ("transcribe", lambda: transcribe_all(model_name=args.model)),
+        ("frames", extract_frames_all),
+        ("chats", parse_chats),
+    ]
+    stage_names = [s[0] for s in stages]
 
     if args.stage == "all":
-        for name, fn in stages.items():
-            fn()
+        start_idx = 0
     else:
-        stages[args.stage]()
+        start_idx = stage_names.index(args.stage)
+
+    # Always run from the requested stage through the end of the pipeline.
+    # Each stage is idempotent — skips completed work automatically.
+    for name, fn in stages[start_idx:]:
+        fn()
 
     show_status()
 
