@@ -53,7 +53,13 @@ See [AGENT_SERVICE.md](AGENT_SERVICE.md) for full documentation.
 
 ## Self-Learning System
 
-Agent reviews weekly performance (Saturdays) and adjusts scoring weights **per killzone** (Asia, London, NY AM, NY Lunch, NY PM):
+Agent reviews weekly performance (Saturdays) and adjusts scoring weights **per killzone** (Asia, London, NY AM, NY Lunch, NY PM).
+
+Weekly review also analyzes macro market context:
+- **FOMC calendar** - detects upcoming Fed meetings
+- **Daily trend analysis** - SPY/QQQ relative to 50/100/200-day MAs
+- **VIX (fear gauge)** - volatility expectations
+- **Market regime classification** - applies scoring modifiers based on conditions
 
 ```bash
 # View learned weights

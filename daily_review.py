@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 
 from alpaca_trader import api, get_recent_fills, ALLOWED_SYMBOLS
 from memories import SCORE_CRITERIA, WEEKLY_LIQUIDITY_BONUS, MONTHLY_LIQUIDITY_BONUS
+from weekly_context import generate_weekly_context, save_weekly_context
 
 ET = ZoneInfo("America/New_York")
 JOURNAL_DIR = Path(__file__).parent / "journal"
@@ -742,7 +743,8 @@ def generate_review_report(trades: list[dict], analysis: dict,
 
 
 def generate_review_report_by_killzone(trades: list[dict], killzone_analysis: dict,
-                                        old_weights: dict, new_weights: dict) -> str:
+                                        old_weights: dict, new_weights: dict,
+                                        weekly_context: dict | None = None) -> str:
     """Generate markdown report of weekly review with killzone-specific analysis."""
     today = datetime.now(ET).strftime("%Y-%m-%d")
 
@@ -763,7 +765,57 @@ def generate_review_report_by_killzone(trades: list[dict], killzone_analysis: di
 - **Win Rate:** {win_rate:.1%}
 - **Total P&L:** ${total_pnl:.2f}
 
-## Killzone Breakdown
+## Weekly Market Context
+
+"""
+
+    # Add weekly context if available
+    if weekly_context:
+        fomc = weekly_context.get("fomc", {})
+        spy = weekly_context.get("spy", {})
+        qqq = weekly_context.get("qqq", {})
+        vix = weekly_context.get("vix", {})
+        regime = weekly_context.get("regime", {})
+
+        report += f"""### FOMC Calendar
+- **{fomc.get('note', 'N/A')}**
+- Impact: {fomc.get('impact', 'none')}
+
+### Market Trend Analysis
+
+**SPY:**
+- Price: ${spy.get('price', 'N/A')} | Trend: {spy.get('trend', 'N/A')}
+- MA-50: ${spy.get('ma_50', 'N/A')} ({spy.get('distance_from_50', 0):+.2f}%)
+- MA-200: ${spy.get('ma_200', 'N/A')} ({spy.get('distance_from_200', 0):+.2f}%)
+- Momentum: {spy.get('momentum', 'N/A')}
+
+**QQQ:**
+- Price: ${qqq.get('price', 'N/A')} | Trend: {qqq.get('trend', 'N/A')}
+- MA-50: ${qqq.get('ma_50', 'N/A')} ({qqq.get('distance_from_50', 0):+.2f}%)
+- MA-200: ${qqq.get('ma_200', 'N/A')} ({qqq.get('distance_from_200', 0):+.2f}%)
+- Momentum: {qqq.get('momentum', 'N/A')}
+
+### Fear Gauge
+- **VIX:** {vix.get('vix', 'N/A')} ({vix.get('classification', 'N/A')})
+- {vix.get('note', 'N/A')}
+
+### Market Regime
+- **{regime.get('regime', 'N/A')}**
+- {regime.get('description', 'N/A')}
+- Confidence: {regime.get('confidence', 0):.0%}
+
+**Scoring Modifiers for this week:**
+"""
+        modifiers = regime.get('scoring_modifiers', {})
+        for key, value in modifiers.items():
+            report += f"- {key}: {value}\n"
+
+        report += "\n"
+
+    else:
+        report += "Weekly context analysis not available.\n\n"
+
+    report += f"""## Killzone Breakdown
 
 """
 
@@ -913,6 +965,15 @@ def run_daily_review():
     if current_weights['meta']['last_updated']:
         print(f"     Last updated: {current_weights['meta']['last_updated']}")
 
+    # Generate weekly market context (FOMC, trends, VIX)
+    print(f"\n")
+    try:
+        weekly_context = generate_weekly_context()
+        save_weekly_context(weekly_context)
+    except Exception as e:
+        print(f"  ⚠ Weekly context analysis failed: {e}")
+        weekly_context = None
+
     # Collect trade data from last 30 days (to have enough data)
     trades = get_closed_trades_from_journal(days_back=30)
 
@@ -960,7 +1021,7 @@ def run_daily_review():
 
     # Generate report
     print(f"\n  📊 Generating review report...")
-    report = generate_review_report_by_killzone(trades, killzone_analysis, current_weights, new_criteria_weights)
+    report = generate_review_report_by_killzone(trades, killzone_analysis, current_weights, new_criteria_weights, weekly_context)
     save_review_report(report)
 
     # Print report to console

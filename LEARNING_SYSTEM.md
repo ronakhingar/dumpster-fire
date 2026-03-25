@@ -156,6 +156,125 @@ This contextual learning mirrors how professional traders adjust their playbook 
 
 ---
 
+## Weekly Market Context Analysis
+
+### Macro Awareness
+
+Every Saturday, the review also analyzes broader market conditions for the upcoming week:
+
+1. **FOMC Calendar Detection**
+   - Checks 2026 Fed meeting schedule
+   - Detects meetings in next 7 days
+   - Classifies impact (high/medium/low) based on proximity
+
+2. **Daily Trend Analysis**
+   - SPY and QQQ position relative to 50/100/200-day MAs
+   - Trend classification (strong_uptrend, uptrend, neutral, downtrend, strong_downtrend)
+   - Momentum assessment (bullish/neutral/bearish)
+
+3. **VIX (Fear Gauge)**
+   - Current volatility expectations
+   - Classification (extreme_fear, high_fear, elevated, normal, complacent)
+   - Volatility factor for position sizing
+
+4. **Market Regime Classification**
+   - Combines all analyses into single regime
+   - Applies scoring modifiers for the week
+   - Examples: `fomc_high_uncertainty`, `strong_bullish_trend`, `extreme_volatility`
+
+### Scoring Modifiers by Regime
+
+**FOMC High Uncertainty** (meeting in 2 days):
+```python
+{
+  "risk_adjustment": 0.5,        # Cut position size in half
+  "volatility_factor": 1.5,      # Expect 50% more volatility
+  "trend_following_boost": 0,
+  "reversal_penalty": 0
+}
+```
+
+**Strong Bullish Trend** (both SPY/QQQ above all MAs):
+```python
+{
+  "risk_adjustment": 1.0,
+  "trend_following_boost": 5,    # +5 pts for long setups
+  "reversal_penalty": -10,       # -10 pts for short setups
+  "volatility_factor": 1.0
+}
+```
+
+**Extreme Volatility** (VIX > 40):
+```python
+{
+  "risk_adjustment": 0.6,        # Reduce size to 60%
+  "volatility_factor": 2.0,      # Expect double volatility
+  "trend_following_boost": 0,
+  "reversal_penalty": 0
+}
+```
+
+### How It Affects Trading
+
+**Example 1: FOMC Week**
+```
+Setup: SPY short, base score 75, HTF bonus +10 = 85 (A+ qualified)
+Regime: fomc_high_uncertainty
+Adjustment: -5 pts (caution before Fed)
+Final: 80 (barely qualifies)
+Position size: 50% of normal (risk_adjustment: 0.5)
+```
+
+**Example 2: Strong Uptrend**
+```
+Setup: QQQ long, base score 70, HTF bonus +5 = 75 (below threshold)
+Regime: strong_bullish_trend
+Adjustment: +5 pts (trend-following boost)
+Final: 80 (now qualifies!)
+Position size: 100% (normal)
+```
+
+**Example 3: Counter-Trend in Strong Bull**
+```
+Setup: SPY short, base score 85, HTF bonus +5 = 90 (A+)
+Regime: strong_bullish_trend
+Adjustment: -10 pts (reversal penalty)
+Final: 80 (still qualifies but penalized)
+Note: Fighting the trend is harder
+```
+
+### Persistence
+
+Weekly context is saved to `journal/weekly_context.json` and loaded by the agent at startup. It remains valid for the entire week until the next Saturday review.
+
+```json
+{
+  "generated_at": "2026-03-29T16:30:00-04:00",
+  "week_starting": "2026-03-31",
+  "fomc": {
+    "has_fomc": true,
+    "date": "2026-04-01",
+    "days_until": 3,
+    "impact": "medium"
+  },
+  "spy": {
+    "price": 580.25,
+    "trend": "strong_uptrend",
+    "above_ma_200": true
+  },
+  "vix": {
+    "vix": 14.5,
+    "classification": "normal"
+  },
+  "regime": {
+    "regime": "strong_bullish_trend",
+    "scoring_modifiers": {...}
+  }
+}
+```
+
+---
+
 ## Configuration
 
 ### Learning Parameters (`daily_review.py`)
