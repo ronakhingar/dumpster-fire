@@ -1,0 +1,57 @@
+---
+description: Current pipeline state and crash recovery context
+alwaysApply: true
+---
+
+# Pipeline State & Crash Recovery
+
+## What's been built
+- `agent.py` — autonomous trading agent with cascading intraday (15Min→5Min→1Min), 2-min loop
+- `memories.py` — knowledge base with A+ criteria, HTF liquidity bonuses
+- `indicator_engine.py` — deterministic indicators + weekly/monthly liquidity detection
+- `alpaca_trader.py` — Alpaca paper trading API wrapper
+- `analyze.py` — technical analysis + setup detection
+- `journal.py` — trade/decision/analysis logging
+- `run_agent.sh` — cron launcher with PID lock, live mode
+- `pipeline.py` — video/audio processing pipeline (discover → transcribe → frames → chats)
+- `docker-compose.yml` — trading Postgres on port 25433
+- `db/init.sql` — full schema with 9 tables, 2 materialized views, indexes
+- `docs/pipeline_architecture.md` — decision record for the data pipeline
+
+## Current pipeline status
+- Postgres trading-db: RUNNING (port 25433, container: trading-db)
+- 12 media sources registered in media_sources table
+- 318 chat messages parsed into session_chats
+- Transcription: IN PROGRESS (Whisper small model on .m4a files)
+  - Sources with .cc.vtt (IDs 1, 12) parse instantly
+  - Remaining 10 sources need Whisper
+- Frame extraction: PENDING (runs after transcription)
+
+## How to check pipeline status
+```bash
+python3 pipeline.py status
+```
+
+## How to resume after a crash
+Pipeline is fully resumable — it reads pipeline_state table from Postgres.
+Just run `python3 pipeline.py` or the specific stage and it picks up where it left off.
+
+## Pending work (NOT yet built)
+1. Discord batch pipeline — blocked on bot approval from server admin
+2. Discord live polling — integrate into agent.py 2-min loop
+3. Gemini-based transcript analysis — extract trades/insights (needs API key)
+4. Gemini-based frame analysis — chart screenshot extraction (needs API key)
+5. Compile insights into memories.py — after Gemini analysis
+
+## Credentials stored in .env
+- ALPACA_API_KEY / ALPACA_SECRET_KEY — paper trading
+- DISCORD_BOT_TOKEN / DISCORD_CHANNEL_ID / DISCORD_GUILD_ID — pending approval
+- TRADING_DB_* / DATABASE_URL — Postgres on port 25433
+- GEMINI_API_KEY — NOT YET SET (user needs to generate from AI Studio)
+
+## Key design decisions (see docs/pipeline_architecture.md)
+- $0 cost: local Whisper + Gemini free tier
+- Postgres over MongoDB (relational queries, materialized views)
+- Separate container from work DB (port 25433 vs 25432)
+- Frames on filesystem, metadata in Postgres
+- Materialized views for agent runtime, never query raw tables
