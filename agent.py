@@ -275,7 +275,7 @@ def _get_daily_state() -> dict:
     state = _load_state()
     today = _today_str()
     if state.get("date") != today:
-        state = {"date": today, "trades_taken": 0, "daily_pnl": 0.0, "last_loss_time": None}
+        state = {"date": today, "trades_taken": 0, "losses_today": 0, "daily_pnl": 0.0, "last_loss_time": None}
         _save_state(state)
     return state
 
@@ -285,6 +285,7 @@ def _record_trade(pnl: float = 0.0):
     state["trades_taken"] = state.get("trades_taken", 0) + 1
     state["daily_pnl"] = state.get("daily_pnl", 0.0) + pnl
     if pnl < 0:
+        state["losses_today"] = state.get("losses_today", 0) + 1
         state["last_loss_time"] = _now_et().isoformat()
     _save_state(state)
 
@@ -307,6 +308,15 @@ def _check_daily_loss_limit(equity: float) -> tuple[bool, str]:
     if daily_pnl <= -max_loss:
         return False, f"Daily loss limit hit: ${daily_pnl:,.2f} (max -${max_loss:,.2f})"
     return True, f"Daily P&L: ${daily_pnl:,.2f} (limit -${max_loss:,.2f})"
+
+
+def _check_max_losses() -> tuple[bool, str]:
+    state = _get_daily_state()
+    max_losses = GUARDRAILS.get("max_losses_per_day", 999)
+    losses = state.get("losses_today", 0)
+    if losses >= max_losses:
+        return False, f"Max losses reached ({losses}/{max_losses})"
+    return True, f"Losses today: {losses}/{max_losses}"
 
 
 def _check_cooldown() -> tuple[bool, str]:
@@ -903,6 +913,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
     preflight = [
         ("Killzone", _check_killzone()),
         ("Trade Limit", _check_daily_trade_limit()),
+        ("Max Losses", _check_max_losses()),
         ("Loss Limit", _check_daily_loss_limit(equity)),
         ("Cooldown", _check_cooldown()),
     ]
@@ -1022,13 +1033,23 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         alt_adj = htf_info.get("alt_data_adjustment", 0)
         total_regime_adj = htf_info.get("total_regime_adjustment", 0)
 
-        print(f"\n  A+ SCORE: {score}  (base: {base_score} + weekly: +{wb} + monthly: +{mb} = +{htf_total} HTF + regime: {total_regime_adj:+d})")
+        # Discord signal bonus
+        from discord_integration import calculate_signal_bonus, get_signal_summary
+        side = intraday["recommendation"]
+        price = intraday["market_state"]["price"]
+        discord_bonus, discord_reason = calculate_signal_bonus(sym, side, price)
+        score += discord_bonus
+
+        print(f"\n  A+ SCORE: {score}  (base: {base_score} + weekly: +{wb} + monthly: +{mb} = +{htf_total} HTF + regime: {total_regime_adj:+d} + discord: {discord_bonus:+d})")
         print(f"  Threshold: {A_PLUS_THRESHOLD}  |  HTF cap: {HTF_BONUS_CAP}")
         if kz_label:
             print(f"  Using {kz_label} killzone weights")
         if WEEKLY_CONTEXT and "regime" in WEEKLY_CONTEXT:
             regime_name = WEEKLY_CONTEXT["regime"].get("regime", "unknown")
             print(f"  Market regime: {regime_name}")
+        if discord_bonus != 0:
+            discord_summary = get_signal_summary(sym)
+            print(f"  📱 Discord signal active: {discord_summary}")
         for criterion, met in checks.items():
             pts = contextual_weights[criterion]
             mark = "✓" if met else "✗"
@@ -1050,6 +1071,9 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                 sign = "✓" if alt_adj > 0 else "✗"
                 alt_bias = WEEKLY_CONTEXT.get("alternative_data", {}).get("directional_bias", {}).get("directional_bias", "unknown")
                 print(f"    {sign} alt_data_adjustment: {alt_adj:+d}pts — {alt_bias}")
+        if discord_bonus != 0:
+            sign = "✓" if discord_bonus > 0 else "✗"
+            print(f"    {sign} discord_signal: {discord_bonus:+d}pts — {discord_reason}")
 
         if score < A_PLUS_THRESHOLD:
             print(f"  ⏭ Score {score} < {A_PLUS_THRESHOLD} — not A+ quality, skipping")
@@ -1061,7 +1085,8 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                 scores={"base": base_score, "weekly_bonus": wb,
                         "monthly_bonus": mb, "htf_total": htf_total,
                         "regime_adjustment": regime_adj,
-                        "alt_data_adjustment": alt_adj, "final": score},
+                        "alt_data_adjustment": alt_adj,
+                        "discord_bonus": discord_bonus, "final": score},
                 criteria=checks,
                 market_state=intraday.get("market_state"),
                 trade_levels=intraday.get("trade"),
@@ -1081,7 +1106,8 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                 scores={"base": base_score, "weekly_bonus": wb,
                         "monthly_bonus": mb, "htf_total": htf_total,
                         "regime_adjustment": regime_adj,
-                        "alt_data_adjustment": alt_adj, "final": score},
+                        "alt_data_adjustment": alt_adj,
+                        "discord_bonus": discord_bonus, "final": score},
                 criteria=checks,
                 market_state=intraday.get("market_state"),
                 trade_levels=trade, htf_info=htf_info)
@@ -1101,7 +1127,8 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                     detected_setup=intraday.get("detected_setup", "none"),
                     recommendation=side, daily_bias=daily_bias,
                     scores={"base": base_score, "weekly_bonus": wb,
-                            "monthly_bonus": mb, "htf_total": htf_total, "final": score},
+                            "monthly_bonus": mb, "htf_total": htf_total,
+                            "discord_bonus": discord_bonus, "final": score},
                     criteria=checks,
                     market_state=intraday.get("market_state"),
                     trade_levels=trade, htf_info=htf_info)
@@ -1204,7 +1231,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
     print(f"\n{'━'*72}")
     print(f"  CYCLE COMPLETE  |  {_now_et().strftime('%H:%M:%S ET')}")
-    print(f"  Trades today: {state.get('trades_taken', 0)}/{GUARDRAILS['max_trades_per_day']}")
+    print(f"  Trades today: {state.get('trades_taken', 0)}/{GUARDRAILS['max_trades_per_day']} | Losses: {state.get('losses_today', 0)}/{GUARDRAILS.get('max_losses_per_day', 2)}")
     print(f"  Daily P&L:    ${state.get('daily_pnl', 0):.2f}")
     print(f"{'━'*72}\n")
 
@@ -1221,6 +1248,7 @@ def run_loop(dry_run: bool = False, interval_min: int = 2):
     print(f"     Killzones enforced: {GUARDRAILS['require_killzone']}")
     print(f"     A+ threshold: {A_PLUS_THRESHOLD}/100")
     print(f"     Max trades/day: {GUARDRAILS['max_trades_per_day']}")
+    print(f"     Max losses/day: {GUARDRAILS.get('max_losses_per_day', 2)}")
     print(f"     Max position: {GUARDRAILS['max_position_pct']:.0%} of equity")
     print(f"     Daily loss limit: {GUARDRAILS['daily_loss_limit_pct']:.0%} of equity")
 

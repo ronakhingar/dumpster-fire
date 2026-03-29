@@ -21,7 +21,7 @@ Distilled from TTT Mastermind 9 & 10 sessions, A+ Trade Rating Guide, Liquidity 
 - **Self-Learning** — Daily review adjusts criteria weights based on actual win/loss outcomes
 - **Killzones** — Asia, London, NY AM, NY Lunch, NY PM (ET times)
 - **Macro Windows** — 20-min high-probability algo bursts
-- **Guardrails** — max 2 trades/day, 5% position size, 2:1 min R:R, 2% daily loss limit, 30-min cooldown after loss
+- **Guardrails** — max 5 trades/day, max 2 losses/day, 5% position size, 2:1 min R:R, 2% daily loss limit, 30-min cooldown after loss
 - **Broker-Side Stops** — All trades use Alpaca bracket orders with automatic stop-loss and take-profit execution
 
 ## Setup
@@ -104,7 +104,8 @@ python3 analyze.py QQQ 1Day
 
 | Rule | Value |
 |------|-------|
-| Max trades/day | 2 |
+| Max trades/day | 5 |
+| Max losses/day | 2 |
 | Max position size | 5% of equity |
 | Min risk:reward | 2:1 |
 | Daily loss limit | 2% of equity |

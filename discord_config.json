@@ -1,0 +1,27 @@
+{
+  "monitored_channels": [
+    {
+      "url": "https://discord.com/channels/400345242882146314/545047039084593163",
+      "name": "stock-alerts",
+      "priority": "high"
+    },
+    {
+      "url": "https://discord.com/channels/400345242882146314/981926799212679248",
+      "name": "day-trade-alerts",
+      "priority": "high"
+    },
+    {
+      "url": "https://discord.com/channels/400345242882146314/661023267439509536",
+      "name": "swings",
+      "priority": "high"
+    }
+  ],
+  "channel_ids": [
+    "545047039084593163",
+    "981926799212679248",
+    "661023267439509536"
+  ],
+  "poll_interval_seconds": 120,
+  "signal_expiry_hours": 4,
+  "min_confidence_threshold": "medium"
+}

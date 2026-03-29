@@ -110,7 +110,8 @@ A_PLUS_THRESHOLD = 80
 # ─── Guardrails ──────────────────────────────────────────────────────────────
 
 GUARDRAILS = {
-    "max_trades_per_day":       2,
+    "max_trades_per_day":       5,
+    "max_losses_per_day":       2,      # Stop after 2 losing trades
     "max_position_pct":         0.05,   # 5% of equity per trade
     "min_risk_reward":          2.0,
     "daily_loss_limit_pct":     0.02,   # 2% max daily drawdown

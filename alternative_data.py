@@ -127,9 +127,13 @@ def analyze_commodities() -> dict:
     Analyze key commodities and their correlation with stock market.
 
     Commodities:
-      - Gold (GLD ETF or XAUUSD): Safe haven, inverse correlation when breaking out
-      - Oil (USO ETF or CL futures): Inflation indicator, affects consumer spending
-      - Silver (SLV ETF): Industrial demand, tech sector proxy
+      - Gold (GLD ETF): Safe haven, inverse correlation when breaking out
+      - Oil (USO ETF): Inflation indicator, affects consumer spending
+
+    Uses Yahoo Finance for free real-time commodity prices.
+
+    NOTE: Support/resistance levels should be reviewed monthly based on
+    recent 30-day highs/lows. Check actual price action to recalibrate.
 
     Returns:
         {
@@ -143,80 +147,153 @@ def analyze_commodities() -> dict:
         }
     """
     try:
-        from alpaca_trader import get_quote
-
         commodities = {}
 
         # Gold (GLD ETF as proxy)
         try:
-            gld_quote = get_quote("GLD")
-            gold_price = (gld_quote["bid"] + gld_quote["ask"]) / 2 if gld_quote else None
+            # Fetch real GLD price with historical context
+            end = int(datetime.now().timestamp())
+            start = int((datetime.now() - timedelta(days=30)).timestamp())
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/GLD?interval=1d&period1={start}&period2={end}"
+            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
 
-            if gold_price:
-                # Simple trend detection (would be enhanced with historical data)
-                # Mock resistance/support levels
-                resistance = 200.0  # Example GLD level
-                support = 180.0
+            if response.status_code == 200:
+                data = response.json()
+                result = data["chart"]["result"][0]
+                closes = [c for c in result["indicators"]["quote"][0]["close"] if c is not None]
 
-                if gold_price > resistance:
-                    gold_trend = "breakout_above_resistance"
-                    gold_implication = "bearish_for_stocks"  # Flight to safety
-                    gold_signal = -3  # Bearish for stocks
-                elif gold_price < support:
-                    gold_trend = "breakdown_below_support"
-                    gold_implication = "bullish_for_stocks"  # Risk-on
-                    gold_signal = +3
-                else:
-                    gold_trend = "range_bound"
-                    gold_implication = "neutral"
-                    gold_signal = 0
+                gold_price = closes[-1]
+                week_ago_price = closes[-6] if len(closes) >= 6 else closes[0]
+                month_ago_price = closes[0]
 
-                commodities["gold"] = {
-                    "ticker": "GLD",
-                    "price": round(gold_price, 2),
-                    "resistance": resistance,
-                    "support": support,
-                    "trend": gold_trend,
-                    "implication": gold_implication,
-                    "signal": gold_signal,
-                    "note": f"Gold at ${gold_price:.2f}, {gold_trend.replace('_', ' ')}"
-                }
+                # Calculate momentum
+                weekly_change = ((gold_price - week_ago_price) / week_ago_price) * 100
+                monthly_change = ((gold_price - month_ago_price) / month_ago_price) * 100
+                month_low = min(closes)
+                month_high = max(closes)
+            else:
+                raise Exception(f"HTTP {response.status_code}")
+
+            # Dynamic resistance/support based on 30-day price action
+            # Updated 2026-03-25: Recent range $399-$492
+            resistance = 485.0  # 30-day high zone ($492 recent peak)
+            support = 400.0     # 30-day low zone ($399 recent test)
+
+            # Absolute level check
+            if gold_price > resistance:
+                gold_trend = "breakout_above_resistance"
+                gold_implication = "bearish_for_stocks"  # Flight to safety
+                gold_signal = -3  # Bearish for stocks
+            elif gold_price < support:
+                gold_trend = "breakdown_below_support"
+                gold_implication = "bullish_for_stocks"  # Risk-on
+                gold_signal = +3
+            else:
+                gold_trend = "range_bound"
+                gold_implication = "neutral"
+                gold_signal = 0
+
+            # SHARP SPIKE DETECTION - gold surge = flight to safety
+            # Gold spike >15% in 30 days = risk-off sentiment even if not at resistance
+            if monthly_change > 15 and gold_signal == 0:
+                gold_trend = "sharp_rally_flight_to_safety"
+                gold_implication = "bearish_for_stocks"  # Risk-off
+                gold_signal = -3
+
+            # Gold drop >15% in 30 days = risk-on rotation
+            elif monthly_change < -15 and gold_signal == 0:
+                gold_trend = "sharp_drop_risk_on"
+                gold_implication = "bullish_for_stocks"  # Money rotating out of safe havens
+                gold_signal = +2
+
+            commodities["gold"] = {
+                "ticker": "GLD",
+                "price": round(gold_price, 2),
+                "weekly_change": round(weekly_change, 2),
+                "monthly_change": round(monthly_change, 2),
+                "month_low": round(month_low, 2),
+                "month_high": round(month_high, 2),
+                "resistance": resistance,
+                "support": support,
+                "trend": gold_trend,
+                "implication": gold_implication,
+                "signal": gold_signal,
+                "note": f"Gold at ${gold_price:.2f} ({monthly_change:+.1f}% monthly), {gold_trend.replace('_', ' ')}"
+            }
         except Exception as e:
             commodities["gold"] = {"error": f"Failed to fetch gold: {e}"}
 
         # Oil (USO ETF as proxy)
         try:
-            uso_quote = get_quote("USO")
-            oil_price = (uso_quote["bid"] + uso_quote["ask"]) / 2 if uso_quote else None
+            # Fetch real USO price with historical context
+            end = int(datetime.now().timestamp())
+            start = int((datetime.now() - timedelta(days=30)).timestamp())
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/USO?interval=1d&period1={start}&period2={end}"
+            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
 
-            if oil_price:
-                # Oil above $80 (USO ~$80) = inflation concerns
-                high_threshold = 80.0
-                low_threshold = 60.0
+            if response.status_code == 200:
+                data = response.json()
+                result = data["chart"]["result"][0]
+                closes = [c for c in result["indicators"]["quote"][0]["close"] if c is not None]
 
-                if oil_price > high_threshold:
-                    oil_trend = "elevated_inflation_concern"
-                    oil_implication = "bearish_for_stocks"
-                    oil_signal = -2
-                elif oil_price < low_threshold:
-                    oil_trend = "low_inflation_supportive"
-                    oil_implication = "bullish_for_stocks"
-                    oil_signal = +2
-                else:
-                    oil_trend = "neutral_range"
-                    oil_implication = "neutral"
-                    oil_signal = 0
+                oil_price = closes[-1]
+                week_ago_price = closes[-6] if len(closes) >= 6 else closes[0]
+                month_ago_price = closes[0]
 
-                commodities["oil"] = {
-                    "ticker": "USO",
-                    "price": round(oil_price, 2),
-                    "high_threshold": high_threshold,
-                    "low_threshold": low_threshold,
-                    "trend": oil_trend,
-                    "implication": oil_implication,
-                    "signal": oil_signal,
-                    "note": f"Oil at ${oil_price:.2f}, {oil_trend.replace('_', ' ')}"
-                }
+                # Calculate momentum
+                weekly_change = ((oil_price - week_ago_price) / week_ago_price) * 100
+                monthly_change = ((oil_price - month_ago_price) / month_ago_price) * 100
+                month_low = min(closes)
+                month_high = max(closes)
+            else:
+                raise Exception(f"HTTP {response.status_code}")
+
+            # Oil thresholds based on 30-day action and inflation implications
+            # Updated 2026-03-25: Recent range $78-$125, currently $113
+            high_threshold = 120.0  # Above this = inflation concern (near recent high $125)
+            low_threshold = 85.0    # Below this = demand concern or low inflation
+
+            # Absolute level check
+            if oil_price > high_threshold:
+                oil_trend = "elevated_inflation_concern"
+                oil_implication = "bearish_for_stocks"
+                oil_signal = -2
+            elif oil_price < low_threshold:
+                oil_trend = "low_inflation_supportive"
+                oil_implication = "bullish_for_stocks"
+                oil_signal = +2
+            else:
+                oil_trend = "neutral_range"
+                oil_implication = "neutral"
+                oil_signal = 0
+
+            # SHARP SPIKE DETECTION - override neutral if momentum extreme
+            # Oil spike >30% in 30 days = inflation shock risk even if not at threshold
+            if monthly_change > 30 and oil_signal == 0:
+                oil_trend = "sharp_spike_inflation_risk"
+                oil_implication = "bearish_for_stocks"
+                oil_signal = -3  # Stronger bearish signal for spike
+
+            # Oil crash >30% in 30 days = demand collapse or deflation
+            elif monthly_change < -30 and oil_signal == 0:
+                oil_trend = "sharp_drop_demand_concern"
+                oil_implication = "bearish_for_stocks"  # Demand destruction also bearish
+                oil_signal = -2
+
+            commodities["oil"] = {
+                "ticker": "USO",
+                "price": round(oil_price, 2),
+                "weekly_change": round(weekly_change, 2),
+                "monthly_change": round(monthly_change, 2),
+                "month_low": round(month_low, 2),
+                "month_high": round(month_high, 2),
+                "high_threshold": high_threshold,
+                "low_threshold": low_threshold,
+                "trend": oil_trend,
+                "implication": oil_implication,
+                "signal": oil_signal,
+                "note": f"Oil at ${oil_price:.2f} ({monthly_change:+.1f}% monthly), {oil_trend.replace('_', ' ')}"
+            }
         except Exception as e:
             commodities["oil"] = {"error": f"Failed to fetch oil: {e}"}
 
@@ -262,7 +339,7 @@ def scan_financial_news() -> dict:
     Scan financial news from past week for market-moving events.
 
     Sources:
-      - Alpha Vantage News API
+      - Yahoo Finance news RSS/API
       - Major economic releases
       - Corporate earnings surprises
       - Geopolitical events
@@ -277,33 +354,72 @@ def scan_financial_news() -> dict:
         }
     """
     try:
-        # In production, would integrate with Alpha Vantage or similar
-        # For now, return structure with mock data
+        # Fetch real news headlines from Yahoo Finance
+        events = []
 
-        # Mock recent events (would be fetched from API)
-        events = [
-            {
-                "date": "2026-03-24",
-                "headline": "Fed Chair signals higher rates for longer",
-                "sentiment": "bearish",
-                "impact": "high",
-                "score": -3
-            },
-            {
-                "date": "2026-03-26",
-                "headline": "Tech earnings beat expectations",
-                "sentiment": "bullish",
-                "impact": "medium",
-                "score": +2
-            },
-            {
-                "date": "2026-03-27",
-                "headline": "Consumer confidence drops unexpectedly",
-                "sentiment": "bearish",
-                "impact": "medium",
-                "score": -2
-            },
-        ]
+        # Try to get market news from Yahoo Finance
+        try:
+            symbols = ["^GSPC", "^DJI", "^IXIC"]  # S&P 500, Dow, Nasdaq
+            for symbol in symbols[:1]:  # Just use S&P for now to avoid rate limiting
+                url = f"https://query1.finance.yahoo.com/v1/finance/search?q={symbol}&quotesCount=0&newsCount=10"
+                response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+
+                if response.status_code == 200:
+                    data = response.json()
+                    news_items = data.get("news", [])
+
+                    for item in news_items[:5]:  # Top 5 stories
+                        title = item.get("title", "")
+                        pub_time = item.get("providerPublishTime", 0)
+                        pub_date = datetime.fromtimestamp(pub_time).strftime("%Y-%m-%d") if pub_time else "recent"
+
+                        # Simple sentiment analysis based on keywords
+                        title_lower = title.lower()
+                        sentiment = "neutral"
+                        score = 0
+                        impact = "medium"
+
+                        # Bearish keywords
+                        if any(word in title_lower for word in ["fall", "drop", "plunge", "crash", "slide", "loss", "down", "concern", "worry", "fear", "risk", "war", "inflation", "rate hike"]):
+                            sentiment = "bearish"
+                            score = -2
+                            if any(word in title_lower for word in ["crash", "plunge", "war", "crisis"]):
+                                impact = "high"
+                                score = -3
+
+                        # Bullish keywords
+                        elif any(word in title_lower for word in ["surge", "rally", "gain", "rise", "up", "beat", "record", "high", "strong", "growth"]):
+                            sentiment = "bullish"
+                            score = +2
+                            if any(word in title_lower for word in ["surge", "record", "soar"]):
+                                impact = "high"
+                                score = +3
+
+                        if score != 0:  # Only add if not neutral
+                            events.append({
+                                "date": pub_date,
+                                "headline": title,
+                                "sentiment": sentiment,
+                                "impact": impact,
+                                "score": score
+                            })
+
+                    break  # Got news, no need to try other symbols
+
+        except Exception as e:
+            print(f"  ⚠ Could not fetch Yahoo Finance news: {e}")
+
+        # If no news fetched, use informative default
+        if not events:
+            events = [
+                {
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "headline": "Unable to fetch current news headlines",
+                    "sentiment": "neutral",
+                    "impact": "low",
+                    "score": 0
+                }
+            ]
 
         # Calculate sentiment
         total_score = sum(e["score"] for e in events)
