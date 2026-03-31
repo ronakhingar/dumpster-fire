@@ -51,12 +51,12 @@ class IBKRExecutor:
             self.connected = False
             print("  🔌 Disconnected from IBKR")
 
-    def get_mes_contract(self, expiry='202406'):
+    def get_mes_contract(self, expiry='202606'):
         """
         Get MES (Micro E-mini S&P 500) contract.
 
         Args:
-            expiry: Contract expiry (YYYYMM format, e.g., '202406' for June 2024)
+            expiry: Contract expiry (YYYYMM format, e.g., '202606' for June 2026)
 
         Returns:
             Qualified Future contract
@@ -65,7 +65,7 @@ class IBKRExecutor:
         self.ib.qualifyContracts(contract)
         return contract
 
-    def get_mnq_contract(self, expiry='202406'):
+    def get_mnq_contract(self, expiry='202606'):
         """
         Get MNQ (Micro E-mini Nasdaq 100) contract.
 
@@ -105,10 +105,10 @@ class IBKRExecutor:
             elif fs['symbol'] == 'MNQ':
                 contract = self.get_mnq_contract()
             elif fs['symbol'] == 'ES':
-                contract = Future('ES', '202406', 'CME')
+                contract = Future('ES', '202606', 'CME')
                 self.ib.qualifyContracts(contract)
             elif fs['symbol'] == 'NQ':
-                contract = Future('NQ', '202406', 'CME')
+                contract = Future('NQ', '202606', 'CME')
                 self.ib.qualifyContracts(contract)
             else:
                 return {"success": False, "message": f"Unknown symbol: {fs['symbol']}"}
