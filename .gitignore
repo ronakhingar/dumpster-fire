@@ -9,3 +9,4 @@ playbooks/
 *.m4a
 *.crdownload
 *.log
+.env

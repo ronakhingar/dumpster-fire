@@ -123,3 +123,43 @@ python3 analyze.py QQQ 1Day
 - Minimum 2:1 risk-reward or skip
 - Never long in premium, never short in discount
 - Skip choppy / unclear bias days
+
+## Discord Real-Time Signal Monitoring
+
+Automated Discord bot captures trading signals from The Traveling Trader server in real-time:
+
+**Monitored Channels:**
+- #🚨┃stock-alerts
+- #🎯┃day-trade-alerts
+- #🏌🏻┃swings
+
+**Active Hours:** 9 AM - 4 PM EST (weekdays)
+**Check Interval:** Every 2 minutes + instant capture
+**Output:** `discord_history/realtime/*.jsonl` + chart images
+
+### Quick Start
+
+```bash
+# 1. Add your Discord user token to .env
+./set_discord_token.sh YOUR_TOKEN_HERE
+
+# 2. Start monitor (background)
+screen -S discord-monitor
+./start_discord_user_monitor.sh
+# Press Ctrl+A then D to detach
+
+# 3. Check status
+./check_bot_status.sh
+tail -f discord_monitor.log
+```
+
+### Process Captured Signals
+
+```bash
+# Extract signals from captured messages
+python3 discord_signal_extractor_enhanced.py discord_history/realtime/stock-alerts.jsonl
+python3 discord_signal_extractor_enhanced.py discord_history/realtime/day-trade-alerts.jsonl
+python3 discord_signal_extractor_enhanced.py discord_history/realtime/swings.jsonl
+```
+
+**See [DISCORD_MONITOR_STATUS.md](DISCORD_MONITOR_STATUS.md) for full documentation.**
