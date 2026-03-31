@@ -977,9 +977,19 @@ def scan_and_act(dry_run: bool = False, use_ibkr: bool = False) -> list[dict]:
     print(f"{'━'*72}")
 
     # ── Pre-flight ────────────────────────────────────────────────────────
-    acct = get_account()
-    stats.tick_api()
-    equity = acct["equity"]
+    if use_ibkr:
+        # Get account equity from IBKR
+        if IBKR_EXECUTOR and IBKR_EXECUTOR.connected:
+            summary = IBKR_EXECUTOR.get_account_summary()
+            equity = float(summary.get('NetLiquidation', '25000'))
+            print(f"  💰 IBKR Account Equity: ${equity:,.2f}")
+        else:
+            print(f"  ⚠️  IBKR not connected, using default equity")
+            equity = 25000.0
+    else:
+        acct = get_account()
+        stats.tick_api()
+        equity = acct["equity"]
 
     # Get current killzone for contextual weight selection
     is_kz, kz_label = in_killzone()
@@ -1003,8 +1013,13 @@ def scan_and_act(dry_run: bool = False, use_ibkr: bool = False) -> list[dict]:
             can_trade = False
 
     # ── Manage existing positions (uses live price) ───────────────────────
-    manage_positions(dry_run=dry_run)
-    stats.tick_api()
+    if not use_ibkr:
+        # Only manage Alpaca positions when not using IBKR
+        manage_positions(dry_run=dry_run)
+        stats.tick_api()
+    else:
+        # IBKR positions are managed by broker-side stops in bracket orders
+        print(f"  📊 IBKR mode: positions managed by broker-side stops")
 
     # ── Multi-timeframe analysis ──────────────────────────────────────────
     results = []
