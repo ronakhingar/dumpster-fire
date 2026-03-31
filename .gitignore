@@ -10,3 +10,8 @@ playbooks/
 *.crdownload
 *.log
 .env
+output/
+reports/
+trade_opportunities/
+trade_categories/
+discord_history/

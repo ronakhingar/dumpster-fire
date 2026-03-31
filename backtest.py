@@ -248,12 +248,18 @@ def backtest_single_day(date_str: str, symbol: str = "SPY", timeframe: str = "5M
             if len(historical_bars) < 50:
                 continue
 
-            # Run real analysis on historical data
-            analysis = analyze_with_bars(historical_bars, symbol)
+            # Get bar timestamp for Discord signal lookup
+            bar = bars[i]
+            bar_time_obj = datetime.fromisoformat(bar['time'])
+
+            # Run real analysis on historical data (with timestamp for Discord signals)
+            analysis = analyze_with_bars(historical_bars, symbol, bar_time=bar_time_obj)
 
             setup = analysis.get('setup')
             side = analysis.get('side')
             score = analysis.get('score', 0)
+            discord_bonus = analysis.get('discord_bonus', 0)
+            discord_reason = analysis.get('discord_reason', '')
             entry_price = analysis.get('entry')
             stop = analysis.get('stop')
             target = analysis.get('target')
@@ -283,6 +289,8 @@ def backtest_single_day(date_str: str, symbol: str = "SPY", timeframe: str = "5M
                     if verbose:
                         print(f"  📍 {bar_time_str}: ENTER {direction.upper()} @ {format_currency(entry_price)}")
                         print(f"     Setup: {setup} | Killzone: {kz_name} | Score: {score}")
+                        if discord_bonus != 0:
+                            print(f"     📱 Discord: {discord_bonus:+d} pts - {discord_reason}")
                         print(f"     Stop: {format_currency(stop)} | Target: {format_currency(target)}")
                         print(f"     Shares: {shares} | Risk: {format_currency(abs(entry_price - stop) * shares)}")
                         print(f"     Indicators: RSI={analysis['indicators'].get('rsi', 0):.1f}, "

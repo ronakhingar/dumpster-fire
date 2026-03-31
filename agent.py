@@ -73,6 +73,11 @@ from memories import (
     HARD_RULES,
 )
 from weekly_context import load_weekly_context
+from video_insights_loader import (
+    get_video_insights,
+    validate_setup_against_videos,
+    check_timeframe_alignment,
+)
 
 # Load learned weights if they exist
 def _load_scoring_weights():
@@ -511,7 +516,46 @@ def score_setup(
     else:
         total_regime_adj = 0
 
-    total = base_score + combined_htf + total_regime_adj
+    # ── Video insights validation bonus ────────────────────────────────
+    video_bonus = 0
+    video_info = {
+        "matches_found": 0,
+        "validation_score": 0,
+        "similar_trades": [],
+        "timeframe_valid": True,
+        "timeframe_bonus": 0,
+    }
+
+    try:
+        # Validate setup against video database
+        validation = validate_setup_against_videos(
+            setup_type=setup,
+            direction=side,
+            confidence=analysis["confidence"]
+        )
+
+        video_bonus = validation["validation_score"]
+        video_info["matches_found"] = validation["matches_found"]
+        video_info["validation_score"] = validation["validation_score"]
+        video_info["similar_trades"] = validation["similar_trades"]
+
+        # Check timeframe alignment (HTF bias + LTF entry principle)
+        # Assuming daily bias is used for bias and 15Min for entry (from multi-timeframe approach)
+        tf_check = check_timeframe_alignment("1Day", "15Min")
+        video_info["timeframe_valid"] = tf_check["valid"]
+        video_info["timeframe_bonus"] = tf_check["bonus_points"]
+
+        if tf_check["valid"]:
+            video_bonus += tf_check["bonus_points"]
+
+        htf_info["video_validation"] = video_info
+
+    except Exception as e:
+        # Graceful fallback if video insights unavailable
+        print(f"  ⚠ Video insights unavailable: {e}")
+        htf_info["video_validation"] = video_info
+
+    total = base_score + combined_htf + total_regime_adj + video_bonus
     return total, checks, htf_info
 
 
@@ -1040,7 +1084,11 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         discord_bonus, discord_reason = calculate_signal_bonus(sym, side, price)
         score += discord_bonus
 
-        print(f"\n  A+ SCORE: {score}  (base: {base_score} + weekly: +{wb} + monthly: +{mb} = +{htf_total} HTF + regime: {total_regime_adj:+d} + discord: {discord_bonus:+d})")
+        # Extract video bonus info
+        video_info = htf_info.get("video_validation", {})
+        video_bonus = video_info.get("validation_score", 0) + video_info.get("timeframe_bonus", 0)
+
+        print(f"\n  A+ SCORE: {score}  (base: {base_score} + weekly: +{wb} + monthly: +{mb} = +{htf_total} HTF + regime: {total_regime_adj:+d} + video: +{video_bonus} + discord: {discord_bonus:+d})")
         print(f"  Threshold: {A_PLUS_THRESHOLD}  |  HTF cap: {HTF_BONUS_CAP}")
         if kz_label:
             print(f"  Using {kz_label} killzone weights")
@@ -1074,6 +1122,12 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         if discord_bonus != 0:
             sign = "✓" if discord_bonus > 0 else "✗"
             print(f"    {sign} discord_signal: {discord_bonus:+d}pts — {discord_reason}")
+        if video_bonus > 0:
+            print(f"    ✓ video_validation: +{video_bonus}pts — {video_info['matches_found']} matching examples + timeframe aligned")
+        elif video_info.get("matches_found", 0) > 0:
+            print(f"    ⚠ video_validation: +{video_bonus}pts — {video_info['matches_found']} matches but timeframe misaligned")
+        else:
+            print(f"    ✗ video_validation: +0pts — No matching examples in video database")
 
         if score < A_PLUS_THRESHOLD:
             print(f"  ⏭ Score {score} < {A_PLUS_THRESHOLD} — not A+ quality, skipping")
@@ -1086,6 +1140,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                         "monthly_bonus": mb, "htf_total": htf_total,
                         "regime_adjustment": regime_adj,
                         "alt_data_adjustment": alt_adj,
+                        "video_bonus": video_bonus,
                         "discord_bonus": discord_bonus, "final": score},
                 criteria=checks,
                 market_state=intraday.get("market_state"),
@@ -1107,6 +1162,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                         "monthly_bonus": mb, "htf_total": htf_total,
                         "regime_adjustment": regime_adj,
                         "alt_data_adjustment": alt_adj,
+                        "video_bonus": video_bonus,
                         "discord_bonus": discord_bonus, "final": score},
                 criteria=checks,
                 market_state=intraday.get("market_state"),
@@ -1128,6 +1184,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                     recommendation=side, daily_bias=daily_bias,
                     scores={"base": base_score, "weekly_bonus": wb,
                             "monthly_bonus": mb, "htf_total": htf_total,
+                            "video_bonus": video_bonus,
                             "discord_bonus": discord_bonus, "final": score},
                     criteria=checks,
                     market_state=intraday.get("market_state"),
@@ -1159,7 +1216,8 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
             print(f"     Monthly Lvl: {ml['label']} @ ${ml['price']:,.2f}")
 
         decision_scores = {"base": base_score, "weekly_bonus": wb,
-                           "monthly_bonus": mb, "htf_total": htf_total, "final": score}
+                           "monthly_bonus": mb, "htf_total": htf_total,
+                           "video_bonus": video_bonus, "final": score}
 
         if dry_run:
             print(f"  📋 DRY RUN — trade logged but NOT executed")
@@ -1171,6 +1229,8 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                 "a_plus_score": score, "base_score": base_score,
                 "weekly_bonus": wb, "monthly_bonus": mb,
                 "htf_bonus_total": htf_total,
+                "video_bonus": video_bonus,
+                "video_matches": video_info.get("matches_found", 0),
                 "weekly_level": htf_info.get("reason_weekly"),
                 "monthly_level": htf_info.get("reason_monthly"),
             }, action=f"dry_{side}")

@@ -108,7 +108,7 @@ def _compute_trade_levels(side, price, atr, rr_target=2.0):
 
 # ─── Backtest-Compatible Analysis ────────────────────────────────────────────
 
-def analyze_with_bars(bars: list[dict], symbol: str = "SPY") -> dict:
+def analyze_with_bars(bars: list[dict], symbol: str = "SPY", bar_time: datetime = None) -> dict:
     """
     Analyze pre-loaded bars without fetching new data.
 
@@ -176,6 +176,9 @@ def analyze_with_bars(bars: list[dict], symbol: str = "SPY") -> dict:
 
     # ── Simple scoring ───────────────────────────────────────────────────
     score = 0
+    discord_bonus = 0
+    discord_reason = "No Discord signal"
+
     if setup and side:
         score = 50  # Base score for any setup
 
@@ -197,6 +200,18 @@ def analyze_with_bars(bars: list[dict], symbol: str = "SPY") -> dict:
         elif side == "sell" and macd_hist and macd_hist < 0:
             score += 15
 
+        # Discord signal bonus (if bar_time provided for backtesting)
+        if bar_time:
+            try:
+                from discord_integration import calculate_historical_signal_bonus
+                discord_bonus, discord_reason = calculate_historical_signal_bonus(
+                    symbol, side, price, bar_time
+                )
+                score += discord_bonus
+            except Exception as e:
+                # Gracefully handle missing Discord integration
+                pass
+
     return {
         "symbol": symbol,
         "setup": setup,
@@ -206,6 +221,8 @@ def analyze_with_bars(bars: list[dict], symbol: str = "SPY") -> dict:
         "stop": trade.get("stop_loss"),
         "target": trade.get("take_profit"),
         "score": min(100, max(0, score)),
+        "discord_bonus": discord_bonus,
+        "discord_reason": discord_reason,
         "indicators": {
             "price": price,
             "ema9": ema9,

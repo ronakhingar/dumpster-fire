@@ -16,6 +16,7 @@ ET = ZoneInfo("America/New_York")
 
 BASE_DIR = Path(__file__).parent
 SIGNALS_FILE = BASE_DIR / "journal" / "discord_signals.json"
+SIGNALS_HISTORY = BASE_DIR / "journal" / "discord_signals_history.jsonl"
 
 
 def load_active_signals():
@@ -191,6 +192,166 @@ def log_signal_usage(symbol: str, trade_id: str):
     # Save updated data
     with open(SIGNALS_FILE, "w") as f:
         json.dump(data, f, indent=2)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Backtesting Support - Historical Signal Loading
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def load_historical_signals():
+    """
+    Load all historical Discord signals from the archive.
+
+    Returns list of signal records sorted by timestamp.
+    """
+    if not SIGNALS_HISTORY.exists():
+        return []
+
+    signals = []
+    try:
+        with open(SIGNALS_HISTORY) as f:
+            for line in f:
+                if line.strip():
+                    signals.append(json.loads(line))
+
+        # Sort by timestamp
+        signals.sort(key=lambda x: x.get("timestamp", ""))
+        return signals
+
+    except Exception as e:
+        print(f"  ⚠ Error loading historical signals: {e}")
+        return []
+
+
+def get_historical_signal_for_time(symbol: str, target_time: datetime):
+    """
+    Get the most recent Discord signal for a symbol at a given historical time.
+
+    For backtesting - finds signals that were active at target_time.
+
+    Args:
+        symbol: SPY or QQQ
+        target_time: The historical moment to check (timezone-aware)
+
+    Returns:
+        Signal dict or None if no active signal at that time
+    """
+    historical_signals = load_historical_signals()
+
+    if not historical_signals:
+        return None
+
+    # Find signals that were active at target_time
+    # (created before target_time, expires after target_time)
+    relevant_signals = []
+
+    for sig in historical_signals:
+        sig_symbols = sig.get("signals", {}).get("symbols", [])
+
+        if symbol not in sig_symbols:
+            continue
+
+        # Check if signal was active at target_time
+        try:
+            signal_timestamp = datetime.fromisoformat(sig["timestamp"])
+            expires_at = datetime.fromisoformat(sig["expires_at"])
+
+            # Ensure timezone awareness
+            if signal_timestamp.tzinfo is None:
+                signal_timestamp = signal_timestamp.replace(tzinfo=ET)
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=ET)
+            if target_time.tzinfo is None:
+                target_time = target_time.replace(tzinfo=ET)
+
+            # Signal must be created before target time and not yet expired
+            if signal_timestamp <= target_time < expires_at:
+                relevant_signals.append(sig)
+
+        except (ValueError, KeyError) as e:
+            # Skip malformed signals
+            continue
+
+    if not relevant_signals:
+        return None
+
+    # Return most recent signal that was active at target_time
+    relevant_signals.sort(key=lambda x: x["timestamp"], reverse=True)
+    return relevant_signals[0]
+
+
+def calculate_historical_signal_bonus(symbol: str, side: str, price: float, target_time: datetime) -> tuple[int, str]:
+    """
+    Calculate Discord signal bonus for backtesting at a historical time.
+
+    Same logic as calculate_signal_bonus() but uses historical signals.
+
+    Args:
+        symbol: SPY or QQQ
+        side: "buy" or "sell"
+        price: Price at that moment
+        target_time: Historical moment (timezone-aware datetime)
+
+    Returns:
+        (bonus_points, reason_text)
+    """
+    signal = get_historical_signal_for_time(symbol, target_time)
+
+    if not signal:
+        return 0, "No active Discord signal"
+
+    sig_data = signal.get("signals", {})
+    sentiment = sig_data.get("sentiment", "neutral")
+    confidence = sig_data.get("confidence", "medium")
+    price_targets = sig_data.get("price_targets", {}).get(symbol, {})
+
+    bonus = 0
+    reasons = []
+
+    # Sentiment alignment
+    if side == "buy" and sentiment == "bullish":
+        if confidence == "high":
+            bonus += 10
+            reasons.append("High-confidence bullish signal")
+        elif confidence == "medium":
+            bonus += 5
+            reasons.append("Medium-confidence bullish signal")
+    elif side == "sell" and sentiment == "bearish":
+        if confidence == "high":
+            bonus += 10
+            reasons.append("High-confidence bearish signal")
+        elif confidence == "medium":
+            bonus += 5
+            reasons.append("Medium-confidence bearish signal")
+    elif (side == "buy" and sentiment == "bearish") or (side == "sell" and sentiment == "bullish"):
+        # Counter-signal penalty
+        bonus -= 5
+        reasons.append("⚠ Counter to Discord sentiment")
+
+    # Price level alignment
+    supports = price_targets.get("support", [])
+    resistances = price_targets.get("resistance", [])
+
+    for support_level in supports:
+        # If buying near support
+        if side == "buy" and abs(price - support_level) / price < 0.01:  # Within 1%
+            bonus += 8
+            reasons.append(f"At support ${support_level:.2f}")
+
+    for resistance_level in resistances:
+        # If selling near resistance
+        if side == "sell" and abs(price - resistance_level) / price < 0.01:  # Within 1%
+            bonus += 8
+            reasons.append(f"At resistance ${resistance_level:.2f}")
+
+    # Risk factor warnings
+    risk_factors = sig_data.get("risk_factors", [])
+    if risk_factors:
+        reasons.append(f"⚠ {len(risk_factors)} risk factors")
+
+    reason_text = " | ".join(reasons) if reasons else "No alignment"
+
+    return bonus, reason_text
 
 
 if __name__ == "__main__":
