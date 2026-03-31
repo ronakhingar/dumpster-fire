@@ -80,6 +80,11 @@ from video_insights_loader import (
     check_timeframe_alignment,
 )
 from fomc_timing import get_fomc_timing, get_fomc_score_adjustment
+from ibkr_executor import IBKRExecutor
+from futures_translator import translate_signal, log_futures_signal
+
+# Global IBKR executor (initialized when --ibkr flag is used)
+IBKR_EXECUTOR = None
 
 # Load learned weights if they exist
 def _load_scoring_weights():
@@ -954,13 +959,14 @@ def _log_sym_decision(
 
 # ─── Core scan-and-act cycle ─────────────────────────────────────────────────
 
-def scan_and_act(dry_run: bool = False) -> list[dict]:
+def scan_and_act(dry_run: bool = False, use_ibkr: bool = False) -> list[dict]:
     """
     One full cycle with multi-timeframe analysis:
       1. Daily bars → directional bias
       2. 15Min bars → entry setup (must align with daily bias)
       3. Live quote → execution price confirmation
       4. A+ scoring + guardrails → go/no-go
+      5. Execute on Alpaca (stocks) or IBKR (futures) based on use_ibkr flag
     """
     stats = CycleStats()
 
@@ -1301,31 +1307,96 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
         # ── Step 7: Execute with broker-side bracket orders ──────────
         try:
-            if side == "buy":
-                order = buy(sym, qty=qty, order_type="limit",
-                            limit_price=exec_price,
-                            stop_loss=trade["stop_loss"],
-                            take_profit=trade["take_profit"])
-            else:
-                order = sell(sym, qty=qty, order_type="limit",
-                             limit_price=exec_price,
-                             stop_loss=trade["stop_loss"],
-                             take_profit=trade["take_profit"])
+            if use_ibkr:
+                # ── IBKR Futures Execution ────────────────────────────
+                print(f"\n  🔄 Translating to futures signal...")
 
-            _record_trade()
-            stats.trades_executed += 1
-            stats.tick_api()
-            print(f"  ✓ Order placed: {order['id']} [BRACKET ORDER - broker-side stops active]")
-            _log_sym_decision(sym, "order_placed",
-                f"{side.upper()} {qty} @ ${exec_price:,.2f} — order {order['id']}",
-                detected_setup=intraday.get("detected_setup", "none"),
-                recommendation=side, daily_bias=daily_bias,
-                scores=decision_scores, criteria=checks,
-                market_state=intraday.get("market_state"),
-                trade_levels={"entry": exec_price, "stop_loss": trade["stop_loss"],
-                              "take_profit": trade["take_profit"], "risk_reward": trade["risk_reward"],
-                              "qty": qty, "order_id": order["id"]},
-                htf_info=htf_info)
+                # Translate SPY/QQQ signal to MES/MNQ futures
+                futures_signal = translate_signal(
+                    signal={
+                        "symbol": sym,
+                        "side": side,
+                        "entry": exec_price,
+                        "stop": trade["stop_loss"],
+                        "target": trade["take_profit"],
+                        "score": score,
+                        "setup": intraday.get("detected_setup", "unknown"),
+                    },
+                    account_equity=equity,
+                    risk_pct=0.02,  # 2% account risk per trade
+                    use_micro=True  # Use micro contracts (MES/MNQ)
+                )
+
+                # Display futures signal
+                fs = futures_signal['futures_signal']
+                print(f"\n  📊 FUTURES SIGNAL:")
+                print(f"     Contract: {fs['symbol']} ({fs['contract_name']})")
+                print(f"     Side: {fs['side'].upper()}")
+                print(f"     Entry: {fs['entry']:.2f}")
+                print(f"     Stop: {fs['stop']:.2f}")
+                print(f"     Target: {fs['target']:.2f}")
+                print(f"     Contracts: {fs['recommended_contracts']}")
+                print(f"     Risk: ${fs['total_risk']:.2f}")
+                print(f"     Reward: ${fs['total_reward']:.2f}")
+                print(f"     R:R: {fs['risk_reward_ratio']:.2f}:1")
+
+                # Place bracket order on IBKR
+                if not IBKR_EXECUTOR or not IBKR_EXECUTOR.connected:
+                    raise Exception("IBKR not connected")
+
+                result = IBKR_EXECUTOR.place_bracket_order(futures_signal)
+
+                if result['success']:
+                    order_ids = result['order_ids']
+                    _record_trade()
+                    stats.trades_executed += 1
+
+                    # Log futures signal
+                    log_futures_signal(futures_signal)
+
+                    print(f"  ✅ IBKR order placed: {order_ids} [BRACKET ORDER - broker-side stops active]")
+                    _log_sym_decision(sym, "order_placed_ibkr",
+                        f"{fs['side'].upper()} {fs['recommended_contracts']} {fs['symbol']} @ {fs['entry']:.2f} — orders {order_ids}",
+                        detected_setup=intraday.get("detected_setup", "none"),
+                        recommendation=side, daily_bias=daily_bias,
+                        scores=decision_scores, criteria=checks,
+                        market_state=intraday.get("market_state"),
+                        trade_levels={"entry": fs['entry'], "stop_loss": fs['stop'],
+                                      "take_profit": fs['target'], "risk_reward": fs['risk_reward_ratio'],
+                                      "contracts": fs['recommended_contracts'], "order_ids": order_ids,
+                                      "futures_symbol": fs['symbol']},
+                        htf_info=htf_info,
+                        futures_signal=futures_signal)
+                else:
+                    raise Exception(result['message'])
+
+            else:
+                # ── Alpaca Stock Execution ────────────────────────────
+                if side == "buy":
+                    order = buy(sym, qty=qty, order_type="limit",
+                                limit_price=exec_price,
+                                stop_loss=trade["stop_loss"],
+                                take_profit=trade["take_profit"])
+                else:
+                    order = sell(sym, qty=qty, order_type="limit",
+                                 limit_price=exec_price,
+                                 stop_loss=trade["stop_loss"],
+                                 take_profit=trade["take_profit"])
+
+                _record_trade()
+                stats.trades_executed += 1
+                stats.tick_api()
+                print(f"  ✓ Order placed: {order['id']} [BRACKET ORDER - broker-side stops active]")
+                _log_sym_decision(sym, "order_placed",
+                    f"{side.upper()} {qty} @ ${exec_price:,.2f} — order {order['id']}",
+                    detected_setup=intraday.get("detected_setup", "none"),
+                    recommendation=side, daily_bias=daily_bias,
+                    scores=decision_scores, criteria=checks,
+                    market_state=intraday.get("market_state"),
+                    trade_levels={"entry": exec_price, "stop_loss": trade["stop_loss"],
+                                  "take_profit": trade["take_profit"], "risk_reward": trade["risk_reward"],
+                                  "qty": qty, "order_id": order["id"]},
+                    htf_info=htf_info)
 
         except Exception as e:
             print(f"  ✗ Order failed: {e}")
@@ -1353,10 +1424,11 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
 # ─── Loop mode ────────────────────────────────────────────────────────────────
 
-def run_loop(dry_run: bool = False, interval_min: int = 2):
+def run_loop(dry_run: bool = False, interval_min: int = 2, use_ibkr: bool = False):
     """Run scan_and_act in a loop, scanning every interval_min during killzones."""
     print(f"\n  🔄 Agent starting in loop mode (interval: {interval_min}min)")
     print(f"     Dry run: {dry_run}")
+    print(f"     Broker: {'IBKR Futures' if use_ibkr else 'Alpaca Stocks'}")
     print(f"     Symbols: {sorted(ALLOWED_SYMBOLS)}")
     print(f"     Killzones enforced: {GUARDRAILS['require_killzone']}")
     print(f"     A+ threshold: {A_PLUS_THRESHOLD}/100")
@@ -1373,7 +1445,7 @@ def run_loop(dry_run: bool = False, interval_min: int = 2):
 
         is_kz, kz_label = in_killzone()
         if is_kz:
-            scan_and_act(dry_run=dry_run)
+            scan_and_act(dry_run=dry_run, use_ibkr=use_ibkr)
             print(f"  ⏳ Next scan in {interval_min} minutes...")
             time.sleep(interval_min * 60)
         else:
@@ -1390,6 +1462,8 @@ def run_loop(dry_run: bool = False, interval_min: int = 2):
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
 def main():
+    global IBKR_EXECUTOR
+
     parser = argparse.ArgumentParser(description="Autonomous trading agent")
     parser.add_argument("--loop", action="store_true",
                         help="Run continuously, auto-waking for killzones")
@@ -1397,12 +1471,34 @@ def main():
                         help="Analyze only — do not place any trades")
     parser.add_argument("--interval", type=int, default=2,
                         help="Minutes between scans during killzones (default: 2)")
+    parser.add_argument("--ibkr", action="store_true",
+                        help="Execute on IBKR futures (MES/MNQ) instead of Alpaca stocks")
     args = parser.parse_args()
 
-    if args.loop:
-        run_loop(dry_run=args.dry_run, interval_min=args.interval)
-    else:
-        scan_and_act(dry_run=args.dry_run)
+    # Initialize IBKR executor if --ibkr flag is used
+    if args.ibkr:
+        print(f"\n{'='*72}")
+        print("  IBKR FUTURES MODE ENABLED")
+        print(f"{'='*72}")
+        print("  ⚙️  Initializing IBKR connection...")
+        IBKR_EXECUTOR = IBKRExecutor(paper_trading=True)
+        if not IBKR_EXECUTOR.connect():
+            print("  ❌ Failed to connect to IBKR. Make sure TWS is running.")
+            print("     Run: python3 ibkr_executor.py test")
+            return
+        print("  ✅ Connected to IBKR paper account")
+        print("  📊 Trading: MES (Micro E-mini S&P 500) and MNQ (Micro Nasdaq 100)")
+        print(f"{'='*72}\n")
+
+    try:
+        if args.loop:
+            run_loop(dry_run=args.dry_run, interval_min=args.interval, use_ibkr=args.ibkr)
+        else:
+            scan_and_act(dry_run=args.dry_run, use_ibkr=args.ibkr)
+    finally:
+        # Cleanup: disconnect from IBKR if connected
+        if IBKR_EXECUTOR and IBKR_EXECUTOR.connected:
+            IBKR_EXECUTOR.disconnect()
 
 
 if __name__ == "__main__":
