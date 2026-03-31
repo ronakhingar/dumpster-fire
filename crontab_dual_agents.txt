@@ -1,0 +1,131 @@
+# ═══════════════════════════════════════════════════════════════
+# Dumpster Fire Trading System - AWS-Ready Cron Configuration
+# ═══════════════════════════════════════════════════════════════
+# All times in ET (Eastern Time) - market timezone
+# Works on macOS, Linux, AWS EC2, Docker containers
+#
+# Installation:
+#   crontab crontab_aws_ready.txt
+#
+# Last Updated: 2026-04-01
+# ═══════════════════════════════════════════════════════════════
+
+# ─── Environment Configuration ───────────────────────────────────
+# Set timezone to Eastern Time (market time)
+# This makes all times below interpreted as ET, regardless of system timezone
+TZ=America/New_York
+
+# Agent working directory (change this path when migrating to AWS)
+AGENT_DIR=/Users/rhingar/Projects/dumpster-fire
+
+# Shell to use
+SHELL=/bin/bash
+
+# Path for executables
+PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+# ═══════════════════════════════════════════════════════════════
+# TRADING AGENTS - Killzone Auto-Start
+# ═══════════════════════════════════════════════════════════════
+# Launches both stock and futures agents at each killzone open
+# Both agents run in loop mode with 2-min scans
+
+# ─── STOCK AGENT (Alpaca - SPY/QQQ) ───────────────────────────
+
+# Asia killzone open (20:00 ET = 8:00 PM ET)
+0 20 * * 1-5 cd $AGENT_DIR && ./run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
+
+# London killzone open (02:00 ET = 2:00 AM ET)
+0 2 * * 2-6 cd $AGENT_DIR && ./run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
+
+# NY AM killzone open (09:30 ET = 9:30 AM ET)
+30 9 * * 1-5 cd $AGENT_DIR && ./run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
+
+# NY Lunch window (12:00 ET = 12:00 PM ET)
+0 12 * * 1-5 cd $AGENT_DIR && ./run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
+
+# NY PM killzone open (13:30 ET = 1:30 PM ET)
+30 13 * * 1-5 cd $AGENT_DIR && ./run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
+
+# ─── FUTURES AGENT (IBKR - MES/MNQ) ────────────────────────────
+# NOTE: Requires TWS to be running for IBKR API connection
+
+# Asia killzone open (20:00 ET = 8:00 PM ET)
+0 20 * * 1-5 cd $AGENT_DIR && ./run_futures_agent.sh >> $AGENT_DIR/journal/futures_agent_cron.log 2>&1
+
+# London killzone open (02:00 ET = 2:00 AM ET)
+0 2 * * 2-6 cd $AGENT_DIR && ./run_futures_agent.sh >> $AGENT_DIR/journal/futures_agent_cron.log 2>&1
+
+# NY AM killzone open (09:30 ET = 9:30 AM ET)
+30 9 * * 1-5 cd $AGENT_DIR && ./run_futures_agent.sh >> $AGENT_DIR/journal/futures_agent_cron.log 2>&1
+
+# NY Lunch window (12:00 ET = 12:00 PM ET)
+0 12 * * 1-5 cd $AGENT_DIR && ./run_futures_agent.sh >> $AGENT_DIR/journal/futures_agent_cron.log 2>&1
+
+# NY PM killzone open (13:30 ET = 1:30 PM ET)
+30 13 * * 1-5 cd $AGENT_DIR && ./run_futures_agent.sh >> $AGENT_DIR/journal/futures_agent_cron.log 2>&1
+
+# ═══════════════════════════════════════════════════════════════
+# DAILY ANALYSIS PIPELINE
+# ═══════════════════════════════════════════════════════════════
+# Runs Gemini analysis after market close and quota reset
+
+# Daily pipeline (17:05 ET = 5:05 PM ET, after 4 PM close)
+5 17 * * * cd $AGENT_DIR && ./run_pipeline.sh >> $AGENT_DIR/logs/pipeline.log 2>&1
+
+# ═══════════════════════════════════════════════════════════════
+# WEEKLY REVIEW & LEARNING
+# ═══════════════════════════════════════════════════════════════
+# Reviews performance and adjusts scoring weights
+
+# Weekly review (Saturdays 16:30 ET = 4:30 PM ET)
+30 16 * * 6 cd $AGENT_DIR && ./schedule_review.sh >> $AGENT_DIR/logs/review.log 2>&1
+
+# ═══════════════════════════════════════════════════════════════
+# DISCORD INTEGRATION
+# ═══════════════════════════════════════════════════════════════
+
+# Daily opportunities report (09:00 ET = 9:00 AM ET, before market open)
+# Mon-Fri: Categorizes Discord signals and generates report
+0 9 * * 1-5 cd $AGENT_DIR && ./generate_opportunities_report.sh >> $AGENT_DIR/logs/opportunities.log 2>&1
+
+# Discord monitor keepalive (every 5 minutes, 24/7)
+# Checks if discord_monitor.py is running, starts it if not
+# Replaces LaunchAgent KeepAlive functionality
+*/5 * * * * pgrep -f "discord_monitor.py --loop" > /dev/null || (cd $AGENT_DIR && /usr/bin/python3 discord_monitor.py --loop >> $AGENT_DIR/logs/discord_monitor.log 2>&1 &)
+
+# ═══════════════════════════════════════════════════════════════
+# MAINTENANCE TASKS
+# ═══════════════════════════════════════════════════════════════
+
+# Image cleanup (every 15 minutes)
+# Removes old Discord chart images to save disk space
+*/15 * * * * cd $AGENT_DIR && /usr/bin/python3 cleanup_discord_images.py >> $AGENT_DIR/logs/image_cleanup.log 2>&1
+
+# Log rotation (daily at 3 AM ET)
+# Keeps logs under control (prevents disk bloat)
+0 3 * * * find $AGENT_DIR/logs -name "*.log" -type f -size +50M -exec gzip {} \; 2>/dev/null
+0 3 * * * find $AGENT_DIR/logs -name "*.log.gz" -type f -mtime +30 -delete 2>/dev/null
+
+# ═══════════════════════════════════════════════════════════════
+# END OF CRONTAB
+# ═══════════════════════════════════════════════════════════════
+#
+# Notes for AWS Migration:
+# 1. Change AGENT_DIR to: /home/ubuntu/dumpster-fire (or your AWS path)
+# 2. Set environment variables in ~/.bashrc or AWS Secrets Manager:
+#    export ALPACA_API_KEY=xxx
+#    export ALPACA_SECRET_KEY=xxx
+#    export DISCORD_TOKEN=xxx
+#    export IBKR_PAPER_USERNAME=xxx
+#    export IBKR_PAPER_PASSWORD=xxx
+# 3. Ensure TWS/IB Gateway is running for futures agent
+# 4. Everything else stays the same!
+#
+# Debugging:
+#   tail -f $AGENT_DIR/journal/agent_cron.log            # Stock agent
+#   tail -f $AGENT_DIR/journal/futures_agent_cron.log    # Futures agent
+#   tail -f $AGENT_DIR/logs/discord_monitor.log
+#   crontab -l  # verify installation
+#
+# ═══════════════════════════════════════════════════════════════
