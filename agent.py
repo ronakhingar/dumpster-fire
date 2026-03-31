@@ -71,6 +71,7 @@ from memories import (
     GUARDRAILS,
     DETECTION,
     HARD_RULES,
+    REGIME_SETUP_MODIFIERS,
 )
 from weekly_context import load_weekly_context
 from video_insights_loader import (
@@ -78,6 +79,7 @@ from video_insights_loader import (
     validate_setup_against_videos,
     check_timeframe_alignment,
 )
+from fomc_timing import get_fomc_timing, get_fomc_score_adjustment
 
 # Load learned weights if they exist
 def _load_scoring_weights():
@@ -487,34 +489,58 @@ def score_setup(
             f"({m_level['proximity']}, {m_level['distance_pct']}% away) → +{m_bonus}pts"
         )
 
-    # Apply weekly market regime modifiers
+    # Apply weekly market regime modifiers (SMART SYSTEM - setup-specific)
     regime_adjustment = 0
     alt_data_adjustment = 0
+    fomc_adjustment = 0
 
     if WEEKLY_CONTEXT and "regime" in WEEKLY_CONTEXT:
         regime_data = WEEKLY_CONTEXT["regime"]
+        regime_name = regime_data.get("regime", "unknown")
         modifiers = regime_data.get("scoring_modifiers", {})
 
-        # Apply trend-following boost or reversal penalty
+        # Get setup-specific regime modifier
+        if regime_name in REGIME_SETUP_MODIFIERS:
+            setup_modifiers = REGIME_SETUP_MODIFIERS[regime_name]
+            regime_adjustment = setup_modifiers.get(setup, setup_modifiers.get("default", 0))
+
+        # Apply directional penalty for counter-trend setups
+        # (overrides setup modifier if fighting strong trend)
+        if regime_name == "strong_bullish_trend" and side == "sell":
+            # Shorting in strong bull = apply penalty
+            regime_adjustment = min(regime_adjustment, modifiers.get("reversal_penalty", -10))
+        elif regime_name == "strong_bearish_trend" and side == "buy":
+            # Longing in strong bear = apply penalty
+            regime_adjustment = min(regime_adjustment, modifiers.get("reversal_penalty", -10))
+
+        # Alternative data adjustment (separate from regime)
         if side == "buy":
-            regime_adjustment = modifiers.get("trend_following_boost", 0)
             alt_data_adjustment = modifiers.get("alt_data_long_bias", 0)
         elif side == "sell":
-            # Reverse the boost for shorts in bearish regimes
-            regime_adjustment = modifiers.get("trend_following_boost", 0)
             alt_data_adjustment = modifiers.get("alt_data_short_bias", 0)
-            # Apply reversal penalty if going against trend
-            if regime_data.get("regime") == "strong_bullish_trend":
-                regime_adjustment = modifiers.get("reversal_penalty", 0)
-
-        total_regime_adj = regime_adjustment + alt_data_adjustment
 
         htf_info["regime_adjustment"] = regime_adjustment
         htf_info["alt_data_adjustment"] = alt_data_adjustment
-        htf_info["total_regime_adjustment"] = total_regime_adj
-        htf_info["regime"] = regime_data.get("regime", "unknown")
+        htf_info["regime"] = regime_name
     else:
-        total_regime_adj = 0
+        regime_adjustment = 0
+        alt_data_adjustment = 0
+
+    # FOMC timing-specific adjustments (overrides weekly regime for timing)
+    fomc_timing = get_fomc_timing()
+    fomc_stage = fomc_timing["stage"]
+
+    if fomc_stage != "normal":
+        fomc_adj_data = get_fomc_score_adjustment(setup, fomc_stage)
+        fomc_adjustment = fomc_adj_data["adjustment"]
+
+        htf_info["fomc_stage"] = fomc_stage
+        htf_info["fomc_adjustment"] = fomc_adjustment
+        htf_info["fomc_timing"] = fomc_timing["note"]
+        htf_info["fomc_action"] = fomc_adj_data["recommended_action"]
+
+    total_regime_adj = regime_adjustment + alt_data_adjustment + fomc_adjustment
+    htf_info["total_regime_adjustment"] = total_regime_adj
 
     # ── Video insights validation bonus ────────────────────────────────
     video_bonus = 0
@@ -1088,7 +1114,8 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         video_info = htf_info.get("video_validation", {})
         video_bonus = video_info.get("validation_score", 0) + video_info.get("timeframe_bonus", 0)
 
-        print(f"\n  A+ SCORE: {score}  (base: {base_score} + weekly: +{wb} + monthly: +{mb} = +{htf_total} HTF + regime: {total_regime_adj:+d} + video: +{video_bonus} + discord: {discord_bonus:+d})")
+        fomc_adj = htf_info.get("fomc_adjustment", 0)
+        print(f"\n  A+ SCORE: {score}  (base: {base_score} + HTF: +{htf_total} + regime: {regime_adj:+d} + alt: {alt_adj:+d} + fomc: {fomc_adj:+d} + video: +{video_bonus} + discord: {discord_bonus:+d})")
         print(f"  Threshold: {A_PLUS_THRESHOLD}  |  HTF cap: {HTF_BONUS_CAP}")
         if kz_label:
             print(f"  Using {kz_label} killzone weights")
@@ -1114,11 +1141,22 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
             if regime_adj != 0:
                 sign = "✓" if regime_adj > 0 else "✗"
                 regime_name = htf_info.get("regime", "unknown")
-                print(f"    {sign} regime_adjustment: {regime_adj:+d}pts — {regime_name}")
+                setup_name = intraday.get("detected_setup", "unknown")
+                print(f"    {sign} regime_adjustment: {regime_adj:+d}pts — {regime_name} + {setup_name}")
             if alt_adj != 0:
                 sign = "✓" if alt_adj > 0 else "✗"
                 alt_bias = WEEKLY_CONTEXT.get("alternative_data", {}).get("directional_bias", {}).get("directional_bias", "unknown")
                 print(f"    {sign} alt_data_adjustment: {alt_adj:+d}pts — {alt_bias}")
+
+        # Show FOMC timing if relevant
+        fomc_adj = htf_info.get("fomc_adjustment", 0)
+        if fomc_adj != 0:
+            sign = "✓" if fomc_adj > 0 else "✗"
+            fomc_note = htf_info.get("fomc_timing", "")
+            fomc_action = htf_info.get("fomc_action", "")
+            print(f"    {sign} fomc_timing: {fomc_adj:+d}pts — {fomc_note}")
+            if fomc_action:
+                print(f"       Action: {fomc_action}")
         if discord_bonus != 0:
             sign = "✓" if discord_bonus > 0 else "✗"
             print(f"    {sign} discord_signal: {discord_bonus:+d}pts — {discord_reason}")
@@ -1140,6 +1178,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                         "monthly_bonus": mb, "htf_total": htf_total,
                         "regime_adjustment": regime_adj,
                         "alt_data_adjustment": alt_adj,
+                        "fomc_adjustment": fomc_adj,
                         "video_bonus": video_bonus,
                         "discord_bonus": discord_bonus, "final": score},
                 criteria=checks,
@@ -1162,6 +1201,7 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                         "monthly_bonus": mb, "htf_total": htf_total,
                         "regime_adjustment": regime_adj,
                         "alt_data_adjustment": alt_adj,
+                        "fomc_adjustment": fomc_adj,
                         "video_bonus": video_bonus,
                         "discord_bonus": discord_bonus, "final": score},
                 criteria=checks,
@@ -1184,6 +1224,9 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                     recommendation=side, daily_bias=daily_bias,
                     scores={"base": base_score, "weekly_bonus": wb,
                             "monthly_bonus": mb, "htf_total": htf_total,
+                            "regime_adjustment": regime_adj,
+                            "alt_data_adjustment": alt_adj,
+                            "fomc_adjustment": fomc_adj,
                             "video_bonus": video_bonus,
                             "discord_bonus": discord_bonus, "final": score},
                     criteria=checks,
@@ -1217,7 +1260,12 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
 
         decision_scores = {"base": base_score, "weekly_bonus": wb,
                            "monthly_bonus": mb, "htf_total": htf_total,
-                           "video_bonus": video_bonus, "final": score}
+                           "regime_adjustment": regime_adj,
+                           "alt_data_adjustment": alt_adj,
+                           "fomc_adjustment": fomc_adj,
+                           "video_bonus": video_bonus,
+                           "discord_bonus": discord_bonus,
+                           "final": score}
 
         if dry_run:
             print(f"  📋 DRY RUN — trade logged but NOT executed")
@@ -1229,10 +1277,15 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
                 "a_plus_score": score, "base_score": base_score,
                 "weekly_bonus": wb, "monthly_bonus": mb,
                 "htf_bonus_total": htf_total,
+                "regime_adjustment": regime_adj,
+                "alt_data_adjustment": alt_adj,
+                "fomc_adjustment": fomc_adj,
                 "video_bonus": video_bonus,
                 "video_matches": video_info.get("matches_found", 0),
+                "discord_bonus": discord_bonus,
                 "weekly_level": htf_info.get("reason_weekly"),
                 "monthly_level": htf_info.get("reason_monthly"),
+                "fomc_timing": htf_info.get("fomc_timing"),
             }, action=f"dry_{side}")
             _log_sym_decision(sym, "trade_signal",
                 f"DRY RUN — {side.upper()} {qty} @ ${exec_price:,.2f} (would have executed)",

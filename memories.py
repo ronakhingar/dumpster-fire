@@ -107,6 +107,62 @@ HTF_BONUS_CAP = 45
 
 A_PLUS_THRESHOLD = 80
 
+# ─── Setup-Specific Regime Modifiers ─────────────────────────────────────────
+# Different setups perform differently in various market conditions.
+# These modifiers adjust scores based on regime + setup type combination.
+
+REGIME_SETUP_MODIFIERS = {
+    # High volatility conditions (VIX > 30)
+    "high_volatility": {
+        "liquidity_sweep":      +8,   # THRIVE - More stops = bigger sweeps
+        "FVG_entry":            +5,   # THRIVE - Gaps larger and clearer
+        "order_block":          +3,   # GOOD - Structure matters more
+        "power_of_three":       +8,   # THRIVE - Manipulation amplified
+        "IFVG":                 +5,   # GOOD - Inverse gaps clearer
+        "2022_model":           +5,   # GOOD - Full model still works
+        "ema9_touch_long":      -10,  # FAIL - Stops too tight
+        "ema9_touch_short":     -10,  # FAIL - Stops too tight
+        "ema_pullback_long":    -10,  # FAIL - Whipsaw risk
+        "ema_bounce_short":     -10,  # FAIL - Whipsaw risk
+        "overbought_reversal":  -8,   # FAIL - False signals multiply
+        "oversold_reversal":    -8,   # FAIL - False signals multiply
+        "default":              -5,   # CAUTION - Most setups suffer
+    },
+
+    # Extreme volatility (VIX > 40)
+    "extreme_volatility": {
+        "liquidity_sweep":      +10,  # BEST - Massive sweeps expected
+        "order_block":          +5,   # GOOD - Major levels hold
+        "FVG_entry":            +3,   # CAUTION - Wait for confirmation
+        "default":              -15,  # AVOID - Too chaotic for most setups
+    },
+
+    # Strong bullish trend
+    "strong_bullish_trend": {
+        "liquidity_sweep":      +5,   # GOOD - Sweeps still happen
+        "FVG_entry":            +3,   # GOOD - If long bias
+        "order_block":          +3,   # GOOD - If long bias
+        "ema9_touch_short":     -15,  # FAIL - Fighting the trend
+        "ema_bounce_short":     -15,  # FAIL - Fighting the trend
+        "overbought_reversal":  -12,  # FAIL - Trend can stay overbought
+        "default":              0,    # NEUTRAL - Depends on direction
+    },
+
+    # Strong bearish trend
+    "strong_bearish_trend": {
+        "liquidity_sweep":      +5,   # GOOD - Sweeps still happen
+        "FVG_entry":            +3,   # GOOD - If short bias
+        "order_block":          +3,   # GOOD - If short bias
+        "ema9_touch_long":      -15,  # FAIL - Fighting the trend
+        "ema_pullback_long":    -15,  # FAIL - Fighting the trend
+        "oversold_reversal":    -12,  # FAIL - Trend can stay oversold
+        "default":              0,    # NEUTRAL - Depends on direction
+    },
+}
+
+# FOMC-specific adjustments are handled separately in fomc_timing.py
+# since they require precise hourly timing, not just weekly regime
+
 # ─── Guardrails ──────────────────────────────────────────────────────────────
 
 GUARDRAILS = {
