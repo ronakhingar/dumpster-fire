@@ -1,0 +1,33 @@
+# ─── Dumpster Fire Trading Agent — Killzone Auto-Start ───
+# Times are Pacific (local) → maps to ET killzone opens
+# Runs in --dry-run mode. Remove --dry-run in run_agent.sh to go live.
+
+AGENT=/Users/rhingar/Projects/dumpster-fire/run_agent.sh
+
+# Asia killzone open (20:00 ET = 17:00 PT)
+0 17 * * 1-5 $AGENT
+
+# London killzone open (02:00 ET = 23:00 PT prev day)
+0 23 * * 0-4 $AGENT
+
+# NY AM killzone open (09:30 ET = 06:30 PT)
+30 6 * * 1-5 $AGENT
+
+# NY Lunch (12:00 ET = 09:00 PT)
+0 9 * * 1-5 $AGENT
+
+# NY PM killzone open (13:30 ET = 10:30 PT)
+30 10 * * 1-5 $AGENT
+
+# ─── Gemini Pipeline: daily analysis after free tier quota reset ───
+5 17 * * * /Users/rhingar/Projects/dumpster-fire/run_pipeline.sh
+
+# ─── Weekly Review: Performance & Learning Updates ───
+# Saturdays at 1:30 PM PT (4:30 PM ET) after market close
+30 13 * * 6 /Users/rhingar/Projects/dumpster-fire/schedule_review.sh
+
+
+
+
+# ─── Discord Opportunities Report (Daily @ 9 AM ET = 6 AM PT) ───
+0 6 * * 1-5 /Users/rhingar/Projects/dumpster-fire/generate_opportunities_report.sh
