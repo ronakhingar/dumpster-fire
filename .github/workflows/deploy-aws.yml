@@ -1,0 +1,66 @@
+name: Deploy to AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Deploy to EC2 via SSM
+        run: |
+          aws ssm send-command \
+            --instance-ids ${{ secrets.EC2_INSTANCE_ID }} \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy dumpster-fire trading system" \
+            --parameters '{
+              "commands": [
+                "cd /home/ubuntu/dumpster-fire",
+                "git fetch origin main",
+                "git reset --hard origin/main",
+                "docker-compose -f docker-compose.multi-agent.yml pull",
+                "docker-compose -f docker-compose.multi-agent.yml up -d --build",
+                "docker-compose -f docker-compose.multi-agent.yml ps"
+              ]
+            }' \
+            --output text
+
+      - name: Wait for command completion
+        run: sleep 10
+
+      - name: Verify deployment
+        run: |
+          aws ssm send-command \
+            --instance-ids ${{ secrets.EC2_INSTANCE_ID }} \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["docker ps --format \"table {{.Names}}\t{{.Status}}\""]' \
+            --output text
+
+      - name: Backup to S3
+        run: |
+          aws ssm send-command \
+            --instance-ids ${{ secrets.EC2_INSTANCE_ID }} \
+            --document-name "AWS-RunShellScript" \
+            --parameters '{
+              "commands": [
+                "cd /home/ubuntu/dumpster-fire",
+                "tar -czf backup-$(date +%Y%m%d-%H%M%S).tar.gz journal/ data/ .env",
+                "aws s3 cp backup-*.tar.gz s3://dumpster-fire-backups/$(date +%Y/%m/%d)/ --storage-class GLACIER",
+                "rm backup-*.tar.gz"
+              ]
+            }' \
+            --output text

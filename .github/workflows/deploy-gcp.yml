@@ -1,0 +1,53 @@
+name: Deploy to GCP Compute Engine
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v1
+
+      - name: Deploy to Compute Engine
+        run: |
+          gcloud compute ssh dumpster-fire-vm \
+            --zone=us-central1-a \
+            --command="
+              cd /home/ubuntu/dumpster-fire &&
+              git fetch origin main &&
+              git reset --hard origin/main &&
+              docker-compose -f docker-compose.multi-agent.yml pull &&
+              docker-compose -f docker-compose.multi-agent.yml up -d --build &&
+              docker-compose -f docker-compose.multi-agent.yml ps
+            "
+
+      - name: Verify deployment
+        run: |
+          gcloud compute ssh dumpster-fire-vm \
+            --zone=us-central1-a \
+            --command="docker ps --format 'table {{.Names}}\t{{.Status}}'"
+
+      - name: Backup to Cloud Storage
+        run: |
+          gcloud compute ssh dumpster-fire-vm \
+            --zone=us-central1-a \
+            --command="
+              cd /home/ubuntu/dumpster-fire &&
+              tar -czf backup-\$(date +%Y%m%d-%H%M%S).tar.gz journal/ data/ .env &&
+              gsutil cp backup-*.tar.gz gs://dumpster-fire-backups/\$(date +%Y/%m/%d)/ &&
+              rm backup-*.tar.gz
+            "

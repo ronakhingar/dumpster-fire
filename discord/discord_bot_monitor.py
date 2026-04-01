@@ -24,7 +24,7 @@ load_dotenv()
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+DISCORD_USER_TOKEN = os.getenv("DISCORD_USER_TOKEN")
 
 # Channels to monitor
 MONITORED_CHANNELS = [
@@ -212,8 +212,8 @@ async def on_message(message):
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    if not DISCORD_BOT_TOKEN or DISCORD_BOT_TOKEN == "PASTE_YOUR_TOKEN_HERE":
-        print("❌ Error: DISCORD_BOT_TOKEN not configured")
+    if not DISCORD_USER_TOKEN or DISCORD_USER_TOKEN == "PASTE_YOUR_TOKEN_HERE":
+        print("❌ Error: DISCORD_USER_TOKEN not configured")
         print()
         print("Add your Discord bot token to the .env file:")
         print("  1. Open .env file in this directory")
@@ -223,7 +223,7 @@ def main():
         return
 
     try:
-        client.run(DISCORD_BOT_TOKEN)
+        client.run(DISCORD_USER_TOKEN)
     except discord.LoginFailure:
         print("❌ Error: Invalid Discord bot token")
     except KeyboardInterrupt:

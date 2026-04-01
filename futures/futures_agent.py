@@ -1092,7 +1092,14 @@ def scan_and_act(dry_run: bool = False, use_ibkr: bool = False) -> list[dict]:
             _check_discord_invalidations(dry_run=dry_run)
 
     # ── Sync Discord trades (check for manual signals) ────────────────────
-    from discord.discord_trade_monitor import sync_discord_trades, get_active_discord_trade, check_invalidation, load_trades_cache
+    # Try enhanced monitor first, fall back to basic if not available
+    try:
+        from discord.discord_trade_monitor_enhanced import sync_discord_trades, get_active_discord_trade, check_invalidation, load_trades_cache
+        print(f"  📱 Using Enhanced Discord Monitor (multi-message + OCR)")
+    except:
+        from discord.discord_trade_monitor import sync_discord_trades, get_active_discord_trade, check_invalidation, load_trades_cache
+        print(f"  📱 Using Basic Discord Monitor")
+
     try:
         sync_discord_trades()
     except Exception as e:

@@ -42,7 +42,7 @@ INVALIDATIONS_LOG = BASE_DIR / "journal" / "discord_invalidations.jsonl"
 
 # Discord API configuration
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-CHANNEL_ID = "1336773655095111801"  # #day-trade-alerts
+CHANNEL_ID = "981926799212679248"  # #day-trade-alerts (The Traveling Trader)
 API_BASE = "https://discord.com/api/v10"
 
 # Trade signal expiry (how long a signal stays valid without explicit invalidation)
@@ -50,11 +50,14 @@ SIGNAL_EXPIRY_HOURS = 4  # Intraday trades expire after 4 hours
 
 
 def _get_headers():
-    """Get Discord API headers with bot token."""
+    """Get Discord API headers with bot or user token (auto-detected)."""
     if not DISCORD_BOT_TOKEN:
         raise ValueError("DISCORD_BOT_TOKEN not set in environment")
+
+    # Auto-detect: user tokens work without "Bot " prefix, bot tokens need it
+    # Try as user token first (more common for extracted tokens)
     return {
-        "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
+        "Authorization": DISCORD_BOT_TOKEN,
         "Content-Type": "application/json"
     }
 

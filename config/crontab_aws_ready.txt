@@ -74,10 +74,10 @@ PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 # Mon-Fri: Categorizes Discord signals and generates report
 0 9 * * 1-5 cd $AGENT_DIR && ./scripts/generate_opportunities_report.sh >> $AGENT_DIR/logs/opportunities.log 2>&1
 
-# Discord monitor keepalive (every 5 minutes, 24/7)
-# Checks if discord_monitor.py is running, starts it if not
-# Replaces LaunchAgent KeepAlive functionality
-*/5 * * * * pgrep -f "discord_monitor.py --loop" > /dev/null || (cd $AGENT_DIR && /usr/bin/python3 -m discord.discord_monitor --loop >> $AGENT_DIR/logs/discord_monitor.log 2>&1 &)
+# Discord bot keepalive (every 5 minutes, 24/7)
+# Checks if discord_bot_monitor.py is running, starts it if not
+# Uses Discord API (works on macOS, Linux, AWS)
+*/5 * * * * pgrep -f "discord_bot_monitor.py" > /dev/null || (cd $AGENT_DIR && /usr/bin/python3 -m discord.discord_bot_monitor >> $AGENT_DIR/logs/discord_bot.log 2>&1 &)
 
 # ═══════════════════════════════════════════════════════════════
 # MAINTENANCE TASKS

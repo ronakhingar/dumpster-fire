@@ -25,7 +25,7 @@ load_dotenv()
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-DISCORD_USER_TOKEN = os.getenv("DISCORD_BOT_TOKEN")  # Uses same .env variable
+DISCORD_USER_TOKEN = os.getenv("DISCORD_USER_TOKEN")
 
 # Channels to monitor (exact names from The Traveling Trader)
 MONITORED_CHANNELS = [
