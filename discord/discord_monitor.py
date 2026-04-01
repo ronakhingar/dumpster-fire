@@ -18,8 +18,8 @@ from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
 
 # Paths
-BASE_DIR = Path(__file__).parent
-CONFIG_FILE = BASE_DIR / "discord_config.json"
+BASE_DIR = Path(__file__).parent.parent
+CONFIG_FILE = Path(__file__).parent / "discord_config.json"
 RAW_OUTPUT = BASE_DIR / "journal" / "discord_raw.jsonl"
 PROCESSED_IDS = BASE_DIR / "journal" / ".discord_processed_ids.txt"
 

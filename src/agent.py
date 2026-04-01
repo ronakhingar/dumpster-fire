@@ -40,7 +40,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from alpaca_trader import (
+from src.alpaca_trader import (
     api,
     buy,
     sell,
@@ -52,13 +52,13 @@ from alpaca_trader import (
     get_recent_fills,
     ALLOWED_SYMBOLS,
 )
-from analyze import analyze
-from indicator_engine import (
+from src.analyze import analyze
+from src.indicator_engine import (
     compute_atr, compute_ema, compute_vwap, compute_rsi,
     detect_weekly_liquidity, detect_monthly_liquidity,
 )
-from journal import log_trade, log_analysis, log_decision
-from memories import (
+from src.journal import log_trade, log_analysis, log_decision
+from src.memories import (
     KILLZONES,
     MACRO_WINDOWS,
     SCORE_CRITERIA,
@@ -73,13 +73,13 @@ from memories import (
     HARD_RULES,
     REGIME_SETUP_MODIFIERS,
 )
-from weekly_context import load_weekly_context
-from video_insights_loader import (
+from src.weekly_context import load_weekly_context
+from video.video_insights_loader import (
     get_video_insights,
     validate_setup_against_videos,
     check_timeframe_alignment,
 )
-from fomc_timing import get_fomc_timing, get_fomc_score_adjustment
+from src.fomc_timing import get_fomc_timing, get_fomc_score_adjustment
 
 # Load learned weights if they exist
 def _load_scoring_weights():
@@ -1104,11 +1104,23 @@ def scan_and_act(dry_run: bool = False) -> list[dict]:
         alt_adj = htf_info.get("alt_data_adjustment", 0)
         total_regime_adj = htf_info.get("total_regime_adjustment", 0)
 
-        # Discord signal bonus
-        from discord_integration import calculate_signal_bonus, get_signal_summary
+        # Discord signal analysis
+        from discord.discord_integration import calculate_signal_bonus, get_signal_summary, check_discord_conflict
         side = intraday["recommendation"]
         price = intraday["market_state"]["price"]
+        setup = intraday.get("detected_setup", "none")
+
+        # Check for conflicts FIRST (e.g., Discord says bounce, agent wants to short)
+        has_conflict, conflict_penalty, conflict_desc = check_discord_conflict(sym, side, setup)
+
+        # Then calculate normal bonus
         discord_bonus, discord_reason = calculate_signal_bonus(sym, side, price)
+
+        # Apply conflict penalty (takes priority over bonus)
+        if has_conflict:
+            discord_bonus = conflict_penalty  # Override with penalty
+            discord_reason = conflict_desc
+
         score += discord_bonus
 
         # Extract video bonus info

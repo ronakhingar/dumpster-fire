@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from indicator_engine import (
+from src.indicator_engine import (
     compute_ema, compute_rsi, compute_macd, compute_atr, compute_vwap,
 )
 

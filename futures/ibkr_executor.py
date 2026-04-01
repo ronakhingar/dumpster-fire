@@ -6,7 +6,7 @@ Integrates with agent to place futures orders via Interactive Brokers API.
 """
 
 from datetime import datetime
-from ib_insync import IB, Future, LimitOrder
+from ib_insync import IB, Future, LimitOrder, MarketOrder
 from pathlib import Path
 import json
 
@@ -79,6 +79,20 @@ class IBKRExecutor:
         self.ib.qualifyContracts(contract)
         return contract
 
+    def get_mgc_contract(self, expiry='202606'):
+        """
+        Get MGC (Micro Gold) contract.
+
+        Args:
+            expiry: Contract expiry (YYYYMM format, e.g., '202606' for June 2026)
+
+        Returns:
+            Qualified Future contract
+        """
+        contract = Future('MGC', expiry, 'COMEX')
+        self.ib.qualifyContracts(contract)
+        return contract
+
     def place_bracket_order(self, signal: dict) -> dict:
         """
         Place bracket order (entry + stop + target) from agent signal.
@@ -104,11 +118,16 @@ class IBKRExecutor:
                 contract = self.get_mes_contract()
             elif fs['symbol'] == 'MNQ':
                 contract = self.get_mnq_contract()
+            elif fs['symbol'] == 'MGC':
+                contract = self.get_mgc_contract()
             elif fs['symbol'] == 'ES':
                 contract = Future('ES', '202606', 'CME')
                 self.ib.qualifyContracts(contract)
             elif fs['symbol'] == 'NQ':
                 contract = Future('NQ', '202606', 'CME')
+                self.ib.qualifyContracts(contract)
+            elif fs['symbol'] == 'GC':
+                contract = Future('GC', '202606', 'COMEX')
                 self.ib.qualifyContracts(contract)
             else:
                 return {"success": False, "message": f"Unknown symbol: {fs['symbol']}"}
@@ -172,17 +191,148 @@ class IBKRExecutor:
             print(f"  ⚠ Could not fetch account summary: {e}")
             return {}
 
-    def get_positions(self) -> list:
-        """Get open positions."""
+    def get_positions(self) -> dict:
+        """
+        Get open positions.
+
+        Returns:
+            Dict mapping contract symbol to position data:
+            {
+                "MES202606": {
+                    "position": 10,  # positive = long, negative = short
+                    "avgCost": 6357.5,
+                    "marketValue": 63575.0,
+                    "unrealizedPnL": 125.0
+                }
+            }
+        """
         if not self.connected:
-            return []
+            return {}
 
         try:
             positions = self.ib.positions()
-            return positions
+
+            result = {}
+            for pos in positions:
+                contract_id = f"{pos.contract.symbol}{pos.contract.lastTradeDateOrContractMonth}"
+                result[contract_id] = {
+                    "position": pos.position,
+                    "avgCost": pos.avgCost,
+                    "marketValue": pos.marketValue,
+                    "unrealizedPnL": pos.unrealizedPnL,
+                    "contract": pos.contract
+                }
+
+            return result
+
         except Exception as e:
             print(f"  ⚠ Could not fetch positions: {e}")
-            return []
+            return {}
+
+    def cancel_all_orders(self, contract_symbol: str = None):
+        """
+        Cancel all open orders, optionally filtered by contract symbol.
+
+        Args:
+            contract_symbol: If provided, only cancel orders for this contract (e.g., "MES202606")
+
+        Returns:
+            Number of orders cancelled
+        """
+        if not self.connected:
+            return 0
+
+        try:
+            open_trades = self.ib.openTrades()
+
+            cancelled_count = 0
+            for trade in open_trades:
+                # Filter by contract if specified
+                if contract_symbol:
+                    trade_contract_id = f"{trade.contract.symbol}{trade.contract.lastTradeDateOrContractMonth}"
+                    if trade_contract_id != contract_symbol:
+                        continue
+
+                # Cancel order
+                self.ib.cancelOrder(trade.order)
+                cancelled_count += 1
+
+            if cancelled_count > 0:
+                print(f"  ✓ Cancelled {cancelled_count} open orders")
+
+            return cancelled_count
+
+        except Exception as e:
+            print(f"  ⚠ Could not cancel orders: {e}")
+            return 0
+
+    def close_position(self, contract_symbol: str):
+        """
+        Close a position with a market order.
+
+        Args:
+            contract_symbol: Contract identifier (e.g., "MES202606")
+
+        Returns:
+            {
+                "success": bool,
+                "status": str,
+                "filled_price": float or None
+            }
+        """
+        if not self.connected:
+            return {"success": False, "status": "Not connected"}
+
+        try:
+            # Get position
+            positions = self.get_positions()
+
+            if contract_symbol not in positions:
+                return {"success": False, "status": f"No position found for {contract_symbol}"}
+
+            pos_data = positions[contract_symbol]
+            position_size = pos_data["position"]
+            contract = pos_data["contract"]
+
+            if position_size == 0:
+                return {"success": False, "status": "Position size is 0"}
+
+            # Determine action (opposite of current position)
+            action = 'SELL' if position_size > 0 else 'BUY'
+            quantity = abs(position_size)
+
+            # Place market order to close
+            order = MarketOrder(action, quantity)
+
+            trade = self.ib.placeOrder(contract, order)
+
+            # Wait for fill (up to 10 seconds)
+            import time
+            for _ in range(20):
+                self.ib.sleep(0.5)
+                if trade.isDone():
+                    break
+
+            if trade.isDone():
+                filled_price = trade.orderStatus.avgFillPrice
+                return {
+                    "success": True,
+                    "status": "filled",
+                    "filled_price": filled_price,
+                    "quantity": quantity
+                }
+            else:
+                return {
+                    "success": False,
+                    "status": f"Order not filled: {trade.orderStatus.status}",
+                    "trade": trade
+                }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "status": f"Close failed: {e}"
+            }
 
 
 def test_connection():

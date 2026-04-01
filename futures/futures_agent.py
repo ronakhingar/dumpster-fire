@@ -42,7 +42,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from alpaca_trader import (
+from src.alpaca_trader import (
     api,
     buy,
     sell,
@@ -54,13 +54,13 @@ from alpaca_trader import (
     get_recent_fills,
     ALLOWED_SYMBOLS,
 )
-from analyze import analyze
-from indicator_engine import (
+from src.analyze import analyze
+from src.indicator_engine import (
     compute_atr, compute_ema, compute_vwap, compute_rsi,
     detect_weekly_liquidity, detect_monthly_liquidity,
 )
-from journal import log_trade, log_analysis, log_decision
-from memories import (
+from src.journal import log_trade, log_analysis, log_decision
+from src.memories import (
     KILLZONES,
     MACRO_WINDOWS,
     SCORE_CRITERIA,
@@ -75,15 +75,15 @@ from memories import (
     HARD_RULES,
     REGIME_SETUP_MODIFIERS,
 )
-from weekly_context import load_weekly_context
-from video_insights_loader import (
+from src.weekly_context import load_weekly_context
+from video.video_insights_loader import (
     get_video_insights,
     validate_setup_against_videos,
     check_timeframe_alignment,
 )
-from fomc_timing import get_fomc_timing, get_fomc_score_adjustment
-from ibkr_executor import IBKRExecutor
-from futures_translator import translate_signal, log_futures_signal
+from src.fomc_timing import get_fomc_timing, get_fomc_score_adjustment
+from futures.ibkr_executor import IBKRExecutor
+from futures.futures_translator import translate_signal, log_futures_signal
 
 # Global IBKR executor (initialized when --ibkr flag is used)
 IBKR_EXECUTOR = None
@@ -811,6 +811,70 @@ def compute_position_size(equity: float, price: float, atr: float | None) -> int
 
 # ─── Position management ─────────────────────────────────────────────────────
 
+def _check_discord_invalidations(dry_run: bool = False):
+    """
+    Check if any open IBKR positions are based on Discord trades that have been invalidated.
+    If invalidation detected, cancel all orders and close position immediately.
+    """
+    from discord.discord_trade_monitor import check_invalidation, load_trades_cache
+
+    if not IBKR_EXECUTOR or not IBKR_EXECUTOR.connected:
+        return
+
+    try:
+        # Get open positions from IBKR
+        positions = IBKR_EXECUTOR.get_positions()
+
+        if not positions:
+            return
+
+        for contract_symbol, position_data in positions.items():
+            # Map futures contract to stock symbol (MES → SPY, MNQ → QQQ, MGC → GLD)
+            if "MES" in contract_symbol:
+                symbol = "SPY"
+            elif "MNQ" in contract_symbol:
+                symbol = "QQQ"
+            elif "MGC" in contract_symbol or "GC" in contract_symbol:
+                symbol = "GLD"
+            else:
+                continue
+
+            # Check if this symbol has an invalidated Discord trade
+            is_invalidated, reason = check_invalidation(symbol)
+
+            if is_invalidated:
+                avg_cost = position_data.get("avgCost", 0)
+                position_size = position_data.get("position", 0)
+
+                print(f"\n  🚨 DISCORD INVALIDATION DETECTED: {symbol} ({contract_symbol})")
+                print(f"     Reason: {reason[:100]}...")
+                print(f"     Position: {position_size} contracts @ ${avg_cost:.2f}")
+                print(f"     🛑 EMERGENCY EXIT: Closing position and cancelling all orders")
+
+                if not dry_run:
+                    # Cancel all open orders for this contract
+                    IBKR_EXECUTOR.cancel_all_orders(contract_symbol)
+
+                    # Close position (market order)
+                    close_result = IBKR_EXECUTOR.close_position(contract_symbol)
+
+                    if close_result:
+                        print(f"     ✓ Position closed: {close_result.get('status', 'unknown')}")
+
+                        # Log the invalidation exit
+                        _log_sym_decision(symbol, "discord_invalidation_exit",
+                            f"Discord setup invalidated: {reason[:100]}",
+                            detected_setup="discord_signal",
+                            invalidation_reason=reason)
+                    else:
+                        print(f"     ✗ Failed to close position")
+                else:
+                    print(f"     [DRY RUN - would close {contract_symbol}]")
+
+    except Exception as e:
+        print(f"  ⚠️  Discord invalidation check failed: {e}")
+
+
 def manage_positions(dry_run: bool = False):
     """
     Check open positions and close any that hit stop or target.
@@ -1023,12 +1087,46 @@ def scan_and_act(dry_run: bool = False, use_ibkr: bool = False) -> list[dict]:
         # IBKR positions are managed by broker-side stops in bracket orders
         print(f"  📊 IBKR mode: positions managed by broker-side stops")
 
+        # Check for Discord invalidations (emergency exit if setup cancelled)
+        if IBKR_EXECUTOR and IBKR_EXECUTOR.connected:
+            _check_discord_invalidations(dry_run=dry_run)
+
+    # ── Sync Discord trades (check for manual signals) ────────────────────
+    from discord.discord_trade_monitor import sync_discord_trades, get_active_discord_trade, check_invalidation, load_trades_cache
+    try:
+        sync_discord_trades()
+    except Exception as e:
+        print(f"  ⚠️  Discord sync failed: {e}")
+
+    # ── Get symbols to analyze (ALLOWED_SYMBOLS + any Discord trades) ────
+    symbols_to_analyze = set(ALLOWED_SYMBOLS)
+    try:
+        # Add symbols from active Discord trades (e.g., GLD for gold)
+        discord_trades = load_trades_cache()
+        for trade in discord_trades:
+            if not trade.get("invalidated", False):
+                symbols_to_analyze.add(trade["symbol"])
+    except Exception as e:
+        print(f"  ⚠️  Could not load Discord symbols: {e}")
+
     # ── Multi-timeframe analysis ──────────────────────────────────────────
     results = []
-    for sym in sorted(ALLOWED_SYMBOLS):
+    for sym in sorted(symbols_to_analyze):
         print(f"\n{'─'*72}")
         print(f"  ANALYZING {sym}  (multi-timeframe)")
         print(f"{'─'*72}")
+
+        # ── Priority: Check Discord for manual trade signals ─────────────
+        discord_trade = None
+        try:
+            discord_trade = get_active_discord_trade(sym)
+            if discord_trade:
+                print(f"  📱 DISCORD TRADE FOUND: {discord_trade['direction'].upper()} @ {discord_trade['entry']}")
+                print(f"     Stop: {discord_trade['stop']}, Target: {discord_trade['target']}, R:R: {discord_trade['risk_reward']}")
+                print(f"     Age: {int((datetime.now(ET) - datetime.fromisoformat(discord_trade['timestamp']).astimezone(ET)).total_seconds() / 60)}m")
+                print(f"     ✓ Using Discord setup instead of chart analysis")
+        except Exception as e:
+            print(f"  ⚠️  Discord check failed: {e}")
 
         # ── Step 1: HTF liquidity maps (weekly + monthly) ─────────────
         weekly_ctx = None
@@ -1055,39 +1153,85 @@ def scan_and_act(dry_run: bool = False, use_ibkr: bool = False) -> list[dict]:
             except Exception as e:
                 print(f"  ⚠ Monthly analysis failed for {sym}: {e}")
 
-        # ── Step 2: Daily bias ────────────────────────────────────────
-        try:
-            bias_data = get_daily_bias(sym)
-            daily_bias = bias_data["bias"]
-            stats.tick_analysis()
-        except Exception as e:
-            print(f"  ⚠ Daily analysis failed for {sym}: {e}")
-            continue
+        # ── Step 2: Use Discord trade OR perform chart analysis ───────
+        intraday = None
 
-        if daily_bias == "neutral":
-            print(f"  ⏭ Daily bias is NEUTRAL for {sym} — no clear direction, sitting out")
-            _log_sym_decision(sym, "neutral_bias",
-                "Daily bias is neutral — no clear direction, sitting out",
-                daily_bias="neutral",
-                market_state=bias_data.get("daily_analysis", {}).get("market_state"))
-            results.append(bias_data.get("daily_analysis", {}))
-            continue
+        if discord_trade:
+            # Use Discord trade setup directly
+            print(f"  ✓ Skipping chart analysis — using Discord setup")
 
-        # ── Step 3: Intraday entry scan ───────────────────────────────
-        try:
-            intraday = get_intraday_analysis(sym, daily_bias)
-            stats.tick_analysis()
-        except Exception as e:
-            print(f"  ⚠ Intraday analysis failed for {sym}: {e}")
-            continue
+            # Get current price for market_state
+            try:
+                quote = get_quote(sym)
+                current_price = quote["ask"] if discord_trade["direction"] == "buy" else quote["bid"]
+            except Exception:
+                current_price = discord_trade["entry"]
 
-        if intraday is None:
-            _log_sym_decision(sym, "counter_trend",
-                f"Intraday setup opposes daily bias ({daily_bias})",
-                daily_bias=daily_bias,
-                market_state=bias_data.get("daily_analysis", {}).get("market_state"))
-            results.append(bias_data.get("daily_analysis", {}))
-            continue
+            # Create intraday-like structure from Discord trade
+            intraday = {
+                "symbol": sym,
+                "recommendation": discord_trade["direction"],
+                "detected_setup": "discord_signal",
+                "entry": discord_trade["entry"],
+                "stop": discord_trade["stop"],
+                "target": discord_trade["target"],
+                "market_state": {
+                    "price": current_price,
+                    "timestamp": datetime.now(ET).isoformat()
+                },
+                "score_context": {
+                    "source": "discord",
+                    "discord_message_id": discord_trade["message_id"],
+                    "discord_timestamp": discord_trade["timestamp"]
+                },
+                "risk_reward": discord_trade["risk_reward"]
+            }
+
+            # Set bias based on direction (for scoring compatibility)
+            daily_bias = "bullish" if discord_trade["direction"] == "buy" else "bearish"
+
+        else:
+            # Perform normal chart analysis
+            # Check if symbol is supported for chart analysis
+            if sym not in ALLOWED_SYMBOLS:
+                print(f"  ⏭ {sym} not in ALLOWED_SYMBOLS — skipping (no Discord trade found)")
+                _log_sym_decision(sym, "no_discord_trade",
+                    f"{sym} requires Discord signal (not in ALLOWED_SYMBOLS for chart analysis)")
+                continue
+
+            # ── Step 2a: Daily bias ────────────────────────────────────────
+            try:
+                bias_data = get_daily_bias(sym)
+                daily_bias = bias_data["bias"]
+                stats.tick_analysis()
+            except Exception as e:
+                print(f"  ⚠ Daily analysis failed for {sym}: {e}")
+                continue
+
+            if daily_bias == "neutral":
+                print(f"  ⏭ Daily bias is NEUTRAL for {sym} — no clear direction, sitting out")
+                _log_sym_decision(sym, "neutral_bias",
+                    "Daily bias is neutral — no clear direction, sitting out",
+                    daily_bias="neutral",
+                    market_state=bias_data.get("daily_analysis", {}).get("market_state"))
+                results.append(bias_data.get("daily_analysis", {}))
+                continue
+
+            # ── Step 2b: Intraday entry scan ───────────────────────────────
+            try:
+                intraday = get_intraday_analysis(sym, daily_bias)
+                stats.tick_analysis()
+            except Exception as e:
+                print(f"  ⚠ Intraday analysis failed for {sym}: {e}")
+                continue
+
+            if intraday is None:
+                _log_sym_decision(sym, "counter_trend",
+                    f"Intraday setup opposes daily bias ({daily_bias})",
+                    daily_bias=daily_bias,
+                    market_state=bias_data.get("daily_analysis", {}).get("market_state"))
+                results.append(bias_data.get("daily_analysis", {}))
+                continue
 
         results.append(intraday)
 
@@ -1127,7 +1271,7 @@ def scan_and_act(dry_run: bool = False, use_ibkr: bool = False) -> list[dict]:
         total_regime_adj = htf_info.get("total_regime_adjustment", 0)
 
         # Discord signal bonus
-        from discord_integration import calculate_signal_bonus, get_signal_summary
+        from discord.discord_integration import calculate_signal_bonus, get_signal_summary
         side = intraday["recommendation"]
         price = intraday["market_state"]["price"]
         discord_bonus, discord_reason = calculate_signal_bonus(sym, side, price)

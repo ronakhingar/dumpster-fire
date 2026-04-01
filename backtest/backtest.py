@@ -19,9 +19,9 @@ from datetime import datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from alpaca_trader import get_historical_bars
-from memories import KILLZONES
-from backtest_engine import analyze_with_bars
+from src.alpaca_trader import get_historical_bars
+from src.memories import KILLZONES
+from backtest.backtest_engine import analyze_with_bars
 
 ET = ZoneInfo("America/New_York")
 

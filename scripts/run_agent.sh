@@ -3,10 +3,11 @@
 # Runs in loop mode, scanning every 2 minutes during killzones.
 # PID lock prevents duplicate processes from cron.
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG="$DIR/journal/agent_cron.log"
-PIDFILE="$DIR/journal/agent.pid"
-mkdir -p "$DIR/journal"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOG="$PROJECT_DIR/journal/agent_cron.log"
+PIDFILE="$PROJECT_DIR/journal/agent.pid"
+mkdir -p "$PROJECT_DIR/journal"
 
 # Rotate log if > 5MB
 if [ -f "$LOG" ] && [ "$(stat -f%z "$LOG" 2>/dev/null || echo 0)" -gt 5242880 ]; then
@@ -33,5 +34,5 @@ echo "  MODE: LIVE LOOP (2-min scan interval)" >> "$LOG"
 echo "  PID: $$" >> "$LOG"
 echo "═══════════════════════════════════════════════════════════" >> "$LOG"
 
-cd "$DIR"
-/usr/bin/python3 agent.py --loop --interval 2 >> "$LOG" 2>&1
+cd "$PROJECT_DIR"
+/usr/bin/python3 -m src.agent --loop --interval 2 >> "$LOG" 2>&1

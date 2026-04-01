@@ -52,6 +52,26 @@ FUTURES_SPECS = {
         "point_value": 2.0,      # 1/10th of NQ
         "typical_margin": 1800,
         "symbol": "MNQ",
+    },
+    "GC": {
+        "name": "Gold Futures",
+        "tracks": "GLD",
+        "multiplier": 10.0,      # GC ≈ GLD × 10 (GLD/10 ≈ gold per oz)
+        "tick_size": 0.10,       # 10 cents per troy ounce
+        "tick_value": 10.0,      # $10 per tick (100 oz × $0.10)
+        "point_value": 100.0,    # $100 per $1 move (100 troy oz)
+        "typical_margin": 9000,
+        "symbol": "GC",
+    },
+    "MGC": {
+        "name": "Micro Gold",
+        "tracks": "GLD",
+        "multiplier": 10.0,      # MGC ≈ GLD × 10
+        "tick_size": 0.10,       # 10 cents per troy ounce
+        "tick_value": 1.0,       # $1 per tick (10 oz × $0.10)
+        "point_value": 10.0,     # $10 per $1 move (10 troy oz)
+        "typical_margin": 900,
+        "symbol": "MGC",
     }
 }
 

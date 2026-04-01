@@ -10,8 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from memories import REGIME_SETUP_MODIFIERS
-from fomc_timing import get_fomc_timing, get_fomc_score_adjustment
+from src.memories import REGIME_SETUP_MODIFIERS
+from src.fomc_timing import get_fomc_timing, get_fomc_score_adjustment
 
 
 def test_regime_modifiers():

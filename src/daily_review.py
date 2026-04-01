@@ -25,9 +25,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from alpaca_trader import api, get_recent_fills, ALLOWED_SYMBOLS
-from memories import SCORE_CRITERIA, WEEKLY_LIQUIDITY_BONUS, MONTHLY_LIQUIDITY_BONUS
-from weekly_context import generate_weekly_context, save_weekly_context
+from src.alpaca_trader import api, get_recent_fills, ALLOWED_SYMBOLS
+from src.memories import SCORE_CRITERIA, WEEKLY_LIQUIDITY_BONUS, MONTHLY_LIQUIDITY_BONUS
+from src.weekly_context import generate_weekly_context, save_weekly_context
 
 ET = ZoneInfo("America/New_York")
 JOURNAL_DIR = Path(__file__).parent / "journal"

@@ -3,10 +3,11 @@
 # Intended for cron: runs after free tier quota resets (midnight UTC / 5 PM PDT).
 # Self-removes from cron once all work is done.
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
-LOG="$DIR/journal/pipeline_cron.log"
-PIDFILE="$DIR/journal/pipeline.pid"
-mkdir -p "$DIR/journal"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOG="$PROJECT_DIR/journal/pipeline_cron.log"
+PIDFILE="$PROJECT_DIR/journal/pipeline.pid"
+mkdir -p "$PROJECT_DIR/journal"
 
 # Rotate log if > 2MB
 if [ -f "$LOG" ] && [ "$(stat -f%z "$LOG" 2>/dev/null || echo 0)" -gt 2097152 ]; then
@@ -27,7 +28,7 @@ echo $$ > "$PIDFILE"
 trap 'rm -f "$PIDFILE"' EXIT
 
 # Check if there's still work to do
-cd "$DIR"
+cd "$PROJECT_DIR"
 REMAINING=$(/usr/bin/python3 -c "
 from dotenv import load_dotenv; load_dotenv()
 import psycopg2
@@ -56,7 +57,7 @@ fi
 echo "" >> "$LOG"
 echo "$(date '+%Y-%m-%d %H:%M:%S') Starting analysis — $REMAINING sources remaining" >> "$LOG"
 
-PYTHONUNBUFFERED=1 /usr/bin/python3 pipeline.py analyze >> "$LOG" 2>&1
+PYTHONUNBUFFERED=1 /usr/bin/python3 -m src.pipeline analyze >> "$LOG" 2>&1
 EXIT_CODE=$?
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') Pipeline exited with code $EXIT_CODE" >> "$LOG"

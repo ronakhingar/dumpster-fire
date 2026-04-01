@@ -32,23 +32,23 @@ PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 # Asia killzone open (20:00 ET = 8:00 PM ET)
 # Mon-Fri: Starts at 8 PM Eastern
-0 20 * * 1-5 cd $AGENT_DIR && ./run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
+0 20 * * 1-5 cd $AGENT_DIR && ./scripts/run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
 
 # London killzone open (02:00 ET = 2:00 AM ET)
 # Tue-Sat: London opens 2 AM Eastern (crosses into next day)
-0 2 * * 2-6 cd $AGENT_DIR && ./run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
+0 2 * * 2-6 cd $AGENT_DIR && ./scripts/run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
 
 # NY AM killzone open (09:30 ET = 9:30 AM ET)
 # Mon-Fri: Market open
-30 9 * * 1-5 cd $AGENT_DIR && ./run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
+30 9 * * 1-5 cd $AGENT_DIR && ./scripts/run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
 
 # NY Lunch window (12:00 ET = 12:00 PM ET)
 # Mon-Fri: Midday reversal opportunities
-0 12 * * 1-5 cd $AGENT_DIR && ./run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
+0 12 * * 1-5 cd $AGENT_DIR && ./scripts/run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
 
 # NY PM killzone open (13:30 ET = 1:30 PM ET)
 # Mon-Fri: Afternoon session
-30 13 * * 1-5 cd $AGENT_DIR && ./run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
+30 13 * * 1-5 cd $AGENT_DIR && ./scripts/run_agent.sh >> $AGENT_DIR/journal/agent_cron.log 2>&1
 
 # ═══════════════════════════════════════════════════════════════
 # DAILY ANALYSIS PIPELINE
@@ -56,7 +56,7 @@ PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 # Runs Gemini analysis after market close and quota reset
 
 # Daily pipeline (17:05 ET = 5:05 PM ET, after 4 PM close)
-5 17 * * * cd $AGENT_DIR && ./run_pipeline.sh >> $AGENT_DIR/logs/pipeline.log 2>&1
+5 17 * * * cd $AGENT_DIR && ./scripts/run_pipeline.sh >> $AGENT_DIR/logs/pipeline.log 2>&1
 
 # ═══════════════════════════════════════════════════════════════
 # WEEKLY REVIEW & LEARNING
@@ -64,7 +64,7 @@ PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 # Reviews performance and adjusts scoring weights
 
 # Weekly review (Saturdays 16:30 ET = 4:30 PM ET)
-30 16 * * 6 cd $AGENT_DIR && ./schedule_review.sh >> $AGENT_DIR/logs/review.log 2>&1
+30 16 * * 6 cd $AGENT_DIR && ./scripts/schedule_review.sh >> $AGENT_DIR/logs/review.log 2>&1
 
 # ═══════════════════════════════════════════════════════════════
 # DISCORD INTEGRATION
@@ -72,12 +72,12 @@ PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 # Daily opportunities report (09:00 ET = 9:00 AM ET, before market open)
 # Mon-Fri: Categorizes Discord signals and generates report
-0 9 * * 1-5 cd $AGENT_DIR && ./generate_opportunities_report.sh >> $AGENT_DIR/logs/opportunities.log 2>&1
+0 9 * * 1-5 cd $AGENT_DIR && ./scripts/generate_opportunities_report.sh >> $AGENT_DIR/logs/opportunities.log 2>&1
 
 # Discord monitor keepalive (every 5 minutes, 24/7)
 # Checks if discord_monitor.py is running, starts it if not
 # Replaces LaunchAgent KeepAlive functionality
-*/5 * * * * pgrep -f "discord_monitor.py --loop" > /dev/null || (cd $AGENT_DIR && /usr/bin/python3 discord_monitor.py --loop >> $AGENT_DIR/logs/discord_monitor.log 2>&1 &)
+*/5 * * * * pgrep -f "discord_monitor.py --loop" > /dev/null || (cd $AGENT_DIR && /usr/bin/python3 -m discord.discord_monitor --loop >> $AGENT_DIR/logs/discord_monitor.log 2>&1 &)
 
 # ═══════════════════════════════════════════════════════════════
 # MAINTENANCE TASKS
@@ -85,7 +85,7 @@ PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 # Image cleanup (every 15 minutes)
 # Removes old Discord chart images to save disk space
-*/15 * * * * cd $AGENT_DIR && /usr/bin/python3 cleanup_discord_images.py >> $AGENT_DIR/logs/image_cleanup.log 2>&1
+*/15 * * * * cd $AGENT_DIR && /usr/bin/python3 -m utils.cleanup_discord_images >> $AGENT_DIR/logs/image_cleanup.log 2>&1
 
 # Log rotation (daily at 3 AM ET)
 # Keeps logs under control (prevents disk bloat)

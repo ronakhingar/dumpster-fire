@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 import alpaca_trade_api as tradeapi
-from journal import log_trade
+from src.journal import log_trade
 
 load_dotenv()
 

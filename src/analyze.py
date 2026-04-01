@@ -11,11 +11,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from alpaca_trader import get_historical_bars, get_quote, ALLOWED_SYMBOLS
-from indicator_engine import (
+from src.alpaca_trader import get_historical_bars, get_quote, ALLOWED_SYMBOLS
+from src.indicator_engine import (
     compute_ema, compute_rsi, compute_macd, compute_atr, compute_vwap,
 )
-from journal import log_analysis
+from src.journal import log_analysis
 
 
 # ─── Internals ───────────────────────────────────────────────────────────────
@@ -60,8 +60,104 @@ def _trend_label(price, ema9, ema21, ema50):
     return "choppy"
 
 
-def _detect_setup(trend, rsi, macd_hist, macd_hist_prev, price, ema9, ema21):
-    """Return (setup_name, side) or (None, None)."""
+def _has_rsi_divergence(bars, rsi_series):
+    """
+    Detect RSI divergence (price makes new high/low but RSI doesn't).
+    Returns: (has_bearish_div, has_bullish_div)
+    """
+    if len(bars) < 10 or len(rsi_series) < 10:
+        return False, False
+
+    # Look at last 10 bars
+    recent_bars = bars[-10:]
+    recent_rsi = [r for r in rsi_series[-10:] if r is not None]
+
+    if len(recent_rsi) < 10:
+        return False, False
+
+    # Bearish divergence: price higher high, RSI lower high
+    price_highs = [b['high'] for b in recent_bars]
+    last_price_high = price_highs[-1]
+    prev_price_high = max(price_highs[:-1])
+
+    last_rsi_high = recent_rsi[-1]
+    prev_rsi_high = max(recent_rsi[:-1])
+
+    bearish_div = (last_price_high > prev_price_high and last_rsi_high < prev_rsi_high)
+
+    # Bullish divergence: price lower low, RSI higher low
+    price_lows = [b['low'] for b in recent_bars]
+    last_price_low = price_lows[-1]
+    prev_price_low = min(price_lows[:-1])
+
+    last_rsi_low = recent_rsi[-1]
+    prev_rsi_low = min(recent_rsi[:-1])
+
+    bullish_div = (last_price_low < prev_price_low and last_rsi_low > prev_rsi_low)
+
+    return bearish_div, bullish_div
+
+
+def _has_rejection_candle(bar, direction="bearish"):
+    """
+    Detect rejection candle (long wick relative to body).
+
+    Args:
+        direction: "bearish" (long upper wick) or "bullish" (long lower wick)
+
+    Returns: bool
+    """
+    o, h, l, c = bar['open'], bar['high'], bar['low'], bar['close']
+
+    body = abs(c - o)
+    total_range = h - l
+
+    if total_range < 0.001:  # Avoid division by zero
+        return False
+
+    if direction == "bearish":
+        # Long upper wick = rejection of higher prices
+        upper_wick = h - max(o, c)
+        # Wick should be at least 2x the body
+        return upper_wick >= body * 2.0 and upper_wick / total_range >= 0.5
+
+    elif direction == "bullish":
+        # Long lower wick = rejection of lower prices
+        lower_wick = min(o, c) - l
+        # Wick should be at least 2x the body
+        return lower_wick >= body * 2.0 and lower_wick / total_range >= 0.5
+
+    return False
+
+
+def _has_volume_confirmation(bars, threshold_multiplier=1.5):
+    """
+    Check if recent volume is elevated (above average).
+
+    Args:
+        bars: List of bar dicts with 'volume' key
+        threshold_multiplier: Volume must be X times the 20-bar average
+
+    Returns: bool
+    """
+    if len(bars) < 20:
+        return False
+
+    recent_volumes = [b.get('volume', 0) for b in bars[-20:]]
+    avg_volume = sum(recent_volumes[:-1]) / len(recent_volumes[:-1]) if recent_volumes[:-1] else 1
+
+    last_volume = recent_volumes[-1]
+
+    return last_volume >= avg_volume * threshold_multiplier
+
+
+def _detect_setup(trend, rsi, macd_hist, macd_hist_prev, price, ema9, ema21, bars=None, rsi_series=None):
+    """
+    Return (setup_name, side) or (None, None).
+
+    Enhanced with stricter reversal requirements:
+    - Overbought/oversold reversals now require divergence + rejection candle + volume
+    """
     if rsi is None or macd_hist is None:
         return None, None
 
@@ -71,13 +167,51 @@ def _detect_setup(trend, rsi, macd_hist, macd_hist_prev, price, ema9, ema21):
     if trend == "bounce_in_downtrend" and rsi > 55 and macd_hist > 0:
         return "ema_bounce_short", "sell"
 
+    # STRICT OVERSOLD REVERSAL (longs)
     if trend in ("strong_downtrend", "downtrend") and rsi <= 30:
         if macd_hist_prev is not None and macd_hist > macd_hist_prev:
-            return "oversold_reversal", "buy"
+            # Check for additional confirmation
+            has_divergence = False
+            has_rejection = False
+            has_volume = False
 
+            if bars and rsi_series:
+                _, bullish_div = _has_rsi_divergence(bars, rsi_series)
+                has_divergence = bullish_div
+                has_rejection = _has_rejection_candle(bars[-1], direction="bullish")
+                has_volume = _has_volume_confirmation(bars)
+
+            # Require at least 2 of 3 confirmations for reversal
+            confirmations = sum([has_divergence, has_rejection, has_volume])
+
+            if confirmations >= 2:
+                return "oversold_reversal", "buy"
+            else:
+                # Not enough confirmation - just watch
+                return "oversold_watch", None
+
+    # STRICT OVERBOUGHT REVERSAL (shorts) - THIS IS THE KEY CHANGE
     if trend in ("strong_uptrend", "uptrend") and rsi >= 70:
         if macd_hist_prev is not None and macd_hist < macd_hist_prev:
-            return "overbought_reversal", "sell"
+            # Check for additional confirmation
+            has_divergence = False
+            has_rejection = False
+            has_volume = False
+
+            if bars and rsi_series:
+                bearish_div, _ = _has_rsi_divergence(bars, rsi_series)
+                has_divergence = bearish_div
+                has_rejection = _has_rejection_candle(bars[-1], direction="bearish")
+                has_volume = _has_volume_confirmation(bars)
+
+            # Require at least 2 of 3 confirmations for reversal
+            confirmations = sum([has_divergence, has_rejection, has_volume])
+
+            if confirmations >= 2:
+                return "overbought_reversal", "sell"
+            else:
+                # Not enough confirmation - just watch
+                return "overbought_watch", None
 
     if trend == "strong_downtrend" and rsi <= 30:
         return "oversold_watch", None
@@ -324,7 +458,7 @@ def analyze(symbol: str, timeframe: str = "1Day", lookback_days: int = 90) -> di
 
     # ── Trend + setup detection ──────────────────────────────────────────
     trend = _trend_label(price, ema9, ema21, ema50)
-    setup, side = _detect_setup(trend, rsi, macd_hist, macd_hist_prev, price, ema9, ema21)
+    setup, side = _detect_setup(trend, rsi, macd_hist, macd_hist_prev, price, ema9, ema21, bars, rsi_series)
 
     # ── Trade levels ─────────────────────────────────────────────────────
     trade = _compute_trade_levels(side, price, atr)

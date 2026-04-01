@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from alpaca_trader import get_historical_bars, get_quote
+from src.alpaca_trader import get_historical_bars, get_quote
 
 ET = ZoneInfo("America/New_York")
 CONTEXT_FILE = Path(__file__).parent / "journal" / "weekly_context.json"

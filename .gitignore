@@ -1,15 +1,28 @@
+# Environment and secrets
 .env
+
+# Python cache
 __pycache__/
 *.pyc
+
+# System files
 .DS_Store
+
+# Runtime data and logs
 journal/
+*.log
+logs/*.log
+
+# Legacy directories
 tt/
 playbooks/
+
+# Media files
 *.mp4
 *.m4a
 *.crdownload
-*.log
-.env
+
+# Generated reports and data
 output/
 reports/
 trade_opportunities/

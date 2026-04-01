@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
 
-BASE_DIR = Path(__file__).parent
+BASE_DIR = Path(__file__).parent.parent
 SIGNALS_FILE = BASE_DIR / "journal" / "discord_signals.json"
 SIGNALS_HISTORY = BASE_DIR / "journal" / "discord_signals_history.jsonl"
 
@@ -63,6 +63,85 @@ def get_signal_for_symbol(symbol: str):
     return relevant_signals[0]
 
 
+def check_discord_conflict(symbol: str, side: str, setup: str) -> tuple[bool, int, str]:
+    """
+    Check if proposed trade conflicts with Discord signals (e.g., Discord says bounce, agent wants to short).
+
+    Args:
+        symbol: SPY or QQQ
+        side: "buy" or "sell"
+        setup: Setup type (e.g., "overbought_reversal")
+
+    Returns:
+        (has_conflict, penalty_points, conflict_description)
+    """
+    signal = get_signal_for_symbol(symbol)
+
+    if not signal:
+        return False, 0, "No Discord signal to conflict with"
+
+    sig_data = signal.get("signals", {})
+    sentiment = sig_data.get("sentiment", "neutral")
+    key_insights = sig_data.get("key_insights", sig_data.get("key_points", []))
+
+    # Check for explicit conflict signals in the text
+    signal_text = " ".join(key_insights).lower() if key_insights else ""
+    raw_text = signal.get("raw_text", "").lower()
+    full_text = signal_text + " " + raw_text
+
+    # Patterns that indicate expecting a bounce/reversal UP
+    bounce_patterns = [
+        "expecting bounce", "bounce expected", "expect bounce", "looking for bounce",
+        "should bounce", "bounce from", "support here", "reversal up",
+        "buy the dip", "dca", "adding", "good entry"
+    ]
+
+    # Patterns that indicate expecting drop/weakness
+    drop_patterns = [
+        "expecting drop", "more downside", "break down", "sell rally",
+        "resistance", "topping", "distribution", "expecting lower", "heading lower"
+    ]
+
+    has_bounce_signal = any(pattern in full_text for pattern in bounce_patterns)
+    has_drop_signal = any(pattern in full_text for pattern in drop_patterns)
+
+    # Check for direct conflicts
+    conflict = False
+    penalty = 0
+    description = ""
+
+    # CONFLICT: Discord expects bounce but agent wants to SHORT
+    if has_bounce_signal and side == "sell":
+        conflict = True
+        penalty = -25  # Heavy penalty
+        description = f"⚠️ DISCORD CONFLICT: Discord expects bounce, but agent wants to SHORT. Signal: '{key_insights[0][:100] if key_insights else raw_text[:100]}...'"
+
+    # CONFLICT: Discord expects drop but agent wants to LONG
+    elif has_drop_signal and side == "buy":
+        conflict = True
+        penalty = -25  # Heavy penalty
+        description = f"⚠️ DISCORD CONFLICT: Discord expects drop, but agent wants to LONG. Signal: '{key_insights[0][:100] if key_insights else raw_text[:100]}...'"
+
+    # CONFLICT: Reversal setup against Discord directional bias
+    elif setup in ("overbought_reversal", "oversold_reversal"):
+        if side == "sell" and sentiment == "bullish":
+            conflict = True
+            penalty = -15
+            description = f"⚠️ REVERSAL CONFLICT: Shorting overbought but Discord is BULLISH ({sentiment})"
+        elif side == "buy" and sentiment == "bearish":
+            conflict = True
+            penalty = -15
+            description = f"⚠️ REVERSAL CONFLICT: Buying oversold but Discord is BEARISH ({sentiment})"
+
+    # General sentiment mismatch (lighter penalty)
+    elif (side == "buy" and sentiment == "bearish") or (side == "sell" and sentiment == "bullish"):
+        conflict = True
+        penalty = -10
+        description = f"⚠️ Discord sentiment {sentiment.upper()}, agent wants to {side.upper()}"
+
+    return conflict, penalty, description
+
+
 def calculate_signal_bonus(symbol: str, side: str, price: float) -> tuple[int, str]:
     """
     Calculate A+ scoring bonus based on Discord signals.
@@ -104,7 +183,7 @@ def calculate_signal_bonus(symbol: str, side: str, price: float) -> tuple[int, s
             bonus += 5
             reasons.append("Medium-confidence bearish signal")
     elif (side == "buy" and sentiment == "bearish") or (side == "sell" and sentiment == "bullish"):
-        # Counter-signal penalty
+        # Counter-signal penalty (now handled by check_discord_conflict)
         bonus -= 5
         reasons.append("⚠ Counter to Discord sentiment")
 
