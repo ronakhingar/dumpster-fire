@@ -1,0 +1,140 @@
+version: '3.8'
+
+# Cloud-Optimized Multi-Agent Setup with Tradovate
+# No IBKR Gateway needed = simpler, lighter, more reliable
+
+services:
+  # PostgreSQL Database (shared by all agents)
+  postgres:
+    image: postgres:16-alpine
+    container_name: trading-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: trading
+      POSTGRES_USER: trading_agent
+      POSTGRES_PASSWORD: ${TRADING_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "25433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading_agent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Stock Agent (SPY/QQQ via Alpaca)
+  stock-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: stock-agent
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - ALPACA_API_KEY=${ALPACA_API_KEY}
+      - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DISCORD_USER_TOKEN=${DISCORD_USER_TOKEN}
+      - AGENT_TYPE=stock
+      - AGENT_SYMBOLS=SPY,QQQ
+    volumes:
+      - ./journal:/app/journal
+      - ./logs:/app/logs
+      - ./data:/app/data
+    command: python3 -m src.agent --loop --interval 2
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # Futures Agent (MES/MNQ via Tradovate) - NO IBKR Gateway needed!
+  futures-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: futures-agent
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - ALPACA_API_KEY=${ALPACA_API_KEY}
+      - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DISCORD_USER_TOKEN=${DISCORD_USER_TOKEN}
+      - TRADOVATE_API_KEY=${TRADOVATE_API_KEY}
+      - TRADOVATE_API_SECRET=${TRADOVATE_API_SECRET}
+      - TRADOVATE_ACCOUNT_ID=${TRADOVATE_ACCOUNT_ID}
+      - TRADOVATE_DEMO=${TRADOVATE_DEMO:-true}
+      - AGENT_TYPE=futures
+    volumes:
+      - ./journal:/app/journal
+      - ./logs:/app/logs
+      - ./data:/app/data
+    command: python3 -m futures.futures_agent_tradovate --loop --interval 2
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # Discord Monitor (captures trading signals)
+  discord-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: discord-monitor
+    restart: unless-stopped
+    environment:
+      - DISCORD_USER_TOKEN=${DISCORD_USER_TOKEN}
+    volumes:
+      - ./discord_history:/app/discord_history
+      - ./journal:/app/journal
+      - ./logs:/app/logs
+    command: python3 -m discord.discord_bot_monitor
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # Options Agent (future - placeholder)
+  # options-agent:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.agent
+  #   container_name: options-agent
+  #   restart: unless-stopped
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   environment:
+  #     - ALPACA_API_KEY=${ALPACA_API_KEY}
+  #     - ALPACA_SECRET_KEY=${ALPACA_SECRET_KEY}
+  #     - TRADOVATE_API_KEY=${TRADOVATE_API_KEY}
+  #     - DATABASE_URL=${DATABASE_URL}
+  #     - AGENT_TYPE=options
+  #   volumes:
+  #     - ./journal:/app/journal
+  #     - ./logs:/app/logs
+  #   command: python3 -m src.options_agent --loop
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  default:
+    name: trading-network
+
+# Resource totals (for cloud sizing):
+# - Stock agent:    512MB
+# - Futures agent:  512MB
+# - Discord:        256MB
+# - PostgreSQL:     150MB
+# - System:         300MB
+# ───────────────────────
+# Total:            ~1.7GB (2GB instance is fine, 4GB for headroom)
